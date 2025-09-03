@@ -60,8 +60,10 @@ def main(ctx, verbose):
 @click.option('--sort', '-s', 'sort_by',
               type=click.Choice(['name', 'size', 'age', 'usage'], case_sensitive=False),
               default='name', help='Sort environments by field')
+@click.option('--fast', is_flag=True, default=True, help='Use fast scanning (default: enabled)')
+@click.option('--thorough', is_flag=True, help='Disable fast scanning for complete results')
 @click.pass_context
-def list(ctx, path, env_type, output_format, sort_by):
+def list(ctx, path, env_type, output_format, sort_by, fast, thorough):
     """List all Python virtual environments"""
     
     discovery = EnvironmentDiscovery()
@@ -75,22 +77,21 @@ def list(ctx, path, env_type, output_format, sort_by):
         # Discovery phase
         discover_task = progress.add_task("Discovering environments...", total=None)
         
+        # Use appropriate scanning mode
+        use_fast_scan = fast and not thorough
+        
         search_paths = [path] if path else None
-        environments = discovery.discover_all(search_paths)
+        environments = discovery.discover_all(search_paths, use_fast_scan=use_fast_scan)
         
         progress.update(discover_task, description="Discovery complete")
         
-        # Analysis phase
+        # Analysis phase with parallel processing
         if environments:
             analyze_task = progress.add_task("Analyzing environments...", total=len(environments))
-            analyzed_environments = []
             
-            for i, env in enumerate(environments):
-                analyzed_env = analysis.analyze_environment(env)
-                analyzed_environments.append(analyzed_env)
-                progress.update(analyze_task, advance=1)
-            
-            environments = analyzed_environments
+            # Use parallel analysis for better performance
+            environments = analysis.analyze_all_environments(environments, use_parallel=use_fast_scan)
+            progress.update(analyze_task, advance=len(environments))
     
     # Filter by type if specified
     if env_type:
@@ -202,7 +203,7 @@ def info(ctx, environment, path):
               help='Search path for environments')
 @click.pass_context
 def health(ctx, path):
-    """🏥 Check health status of all environments"""
+    """Check health status of all environments"""
     
     discovery = EnvironmentDiscovery()
     analysis = EnvironmentAnalysis()
@@ -212,7 +213,7 @@ def health(ctx, path):
         TextColumn("[progress.description]{task.description}"),
         console=console
     ) as progress:
-        task = progress.add_task("🏥 Checking environment health...", total=None)
+        task = progress.add_task("Checking environment health...", total=None)
         
         search_paths = [path] if path else None
         environments = discovery.discover_all(search_paths)
@@ -298,7 +299,7 @@ def stats(ctx, path):
               help='Search path for environments')
 @click.pass_context
 def duplicates(ctx, path):
-    """🔄 Find environments with similar package lists"""
+    """Find environments with similar package lists"""
     
     discovery = EnvironmentDiscovery()
     analysis = EnvironmentAnalysis()
@@ -448,6 +449,52 @@ def clean(ctx, unused_days, dry_run, force, path):
     console.print(f"   Space freed: {human_readable_size(removed_size)}")
     if removed_count > 0:
         console.print("   💾 Backups created for safety")
+
+
+@main.command()
+@click.option('--clear', is_flag=True, help='Clear all cached data')
+@click.option('--stats', is_flag=True, help='Show cache statistics')
+@click.pass_context
+def cache(ctx, clear, stats):
+    """Manage venvy cache for better performance"""
+    from venvy.performance import EnvironmentCache
+    
+    cache_manager = EnvironmentCache()
+    
+    if clear:
+        cache_manager.clear_cache()
+        console.print("Cache cleared successfully")
+        return
+    
+    if stats:
+        cache_dir = cache_manager.cache_dir
+        if cache_dir.exists():
+            cache_files = list(cache_dir.glob("*.json"))
+            total_size = sum(f.stat().st_size for f in cache_files if f.exists())
+            
+            console.print(f"Cache directory: {cache_dir}")
+            console.print(f"Cache files: {len(cache_files)}")
+            console.print(f"Total size: {human_readable_size(total_size)}")
+            
+            # Check cache freshness
+            env_cache = cache_manager.cache_file
+            if env_cache.exists():
+                import json
+                try:
+                    with open(env_cache) as f:
+                        data = json.load(f)
+                    cached_at = data.get('cached_at', '')
+                    env_count = len(data.get('environments', []))
+                    console.print(f"Environment cache: {env_count} environments")
+                    console.print(f"Last updated: {cached_at}")
+                except Exception:
+                    console.print("Environment cache: corrupted")
+        else:
+            console.print("No cache data found")
+        return
+    
+    console.print("Venvy uses intelligent caching to improve performance")
+    console.print("Use --clear to clear cache or --stats to show cache information")
 
 
 def _sort_environments(environments: List, sort_by: str):

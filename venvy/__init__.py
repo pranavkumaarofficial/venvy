@@ -5,7 +5,7 @@ A cross-platform tool for discovering, analyzing, and managing Python virtual en
 with intelligence and style.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __author__ = "Pranav Kumaar"
 
 from venvy.discovery import EnvironmentDiscovery

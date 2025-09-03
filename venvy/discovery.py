@@ -30,16 +30,25 @@ class EnvironmentDiscovery:
         self._discovered_environments: Dict[str, EnvironmentInfo] = {}
         self._search_cache: Set[str] = set()
     
-    def discover_all(self, search_paths: Optional[List[Path]] = None) -> List[EnvironmentInfo]:
+    def discover_all(self, search_paths: Optional[List[Path]] = None, use_fast_scan: bool = True) -> List[EnvironmentInfo]:
         """
         Discover all Python environments on the system
         
         Args:
             search_paths: Additional paths to search (optional)
+            use_fast_scan: Use optimized scanning (default: True)
             
         Returns:
             List of discovered environments
         """
+        # Try cache first for performance
+        if use_fast_scan and not search_paths:
+            from venvy.performance import EnvironmentCache
+            cache = EnvironmentCache()
+            cached_envs = cache.get_cached_environments()
+            if cached_envs:
+                return [self._env_from_dict(env_data) for env_data in cached_envs]
+        
         environments = []
         
         # Determine search locations
@@ -48,28 +57,91 @@ class EnvironmentDiscovery:
         else:
             locations = self._get_search_locations()
         
-        # Search each location
-        for location in locations:
-            if not location.exists() or not location.is_dir():
-                continue
-                
-            try:
-                # Discover different types of environments
-                environments.extend(self._discover_venv_environments(location))
-                environments.extend(self._discover_conda_environments(location))
-                environments.extend(self._discover_pyenv_environments(location))
-            except (PermissionError, OSError):
-                # Skip locations we can't access
-                continue
+        # Use fast scanner if enabled
+        if use_fast_scan:
+            from venvy.performance import FastScanner
+            scanner = FastScanner(max_depth=4, timeout_per_location=120)
+            
+            for location in locations[:3]:  # Limit to first 3 locations for speed
+                if not location.exists() or not location.is_dir():
+                    continue
+                    
+                try:
+                    # Fast venv discovery
+                    venv_paths = scanner.fast_discover_venvs(location, max_workers=3)
+                    for venv_path in venv_paths:
+                        env_info = self._analyze_single_environment(venv_path)
+                        if env_info:
+                            environments.append(env_info)
+                    
+                    # Quick conda discovery
+                    environments.extend(self._discover_conda_environments(location))
+                except (PermissionError, OSError, TimeoutError):
+                    continue
+        else:
+            # Original thorough scanning
+            for location in locations:
+                if not location.exists() or not location.is_dir():
+                    continue
+                    
+                try:
+                    environments.extend(self._discover_venv_environments(location))
+                    environments.extend(self._discover_conda_environments(location))
+                    environments.extend(self._discover_pyenv_environments(location))
+                except (PermissionError, OSError):
+                    continue
         
-        # Remove duplicates based on normalized paths
+        # Remove duplicates
         unique_environments = self._deduplicate_environments(environments)
         
-        # Cache results
+        # Cache results for fast scanning
+        if use_fast_scan and unique_environments:
+            from venvy.performance import EnvironmentCache
+            cache = EnvironmentCache()
+            cache.cache_environments(unique_environments)
+        
+        # Cache in memory
         for env in unique_environments:
             self._discovered_environments[str(env.path)] = env
             
         return unique_environments
+    
+    def _env_from_dict(self, env_data: Dict) -> EnvironmentInfo:
+        """Reconstruct EnvironmentInfo from cached dictionary data"""
+        try:
+            from venvy.models import EnvironmentType, HealthStatus
+            env_type = EnvironmentType(env_data.get('type', 'unknown'))
+            health_status = HealthStatus(env_data.get('health_status', 'unknown'))
+            
+            return EnvironmentInfo(
+                name=env_data['name'],
+                path=Path(env_data['path']),
+                type=env_type,
+                python_version=env_data.get('python_version'),
+                python_executable=Path(env_data['python_executable']) if env_data.get('python_executable') else None,
+                size_bytes=env_data.get('size_bytes'),
+                created_date=datetime.fromisoformat(env_data['created_date']) if env_data.get('created_date') else None,
+                last_accessed=datetime.fromisoformat(env_data['last_accessed']) if env_data.get('last_accessed') else None,
+                last_modified=datetime.fromisoformat(env_data['last_modified']) if env_data.get('last_modified') else None,
+                package_count=env_data.get('package_count'),
+                packages=env_data.get('packages'),
+                pip_version=env_data.get('pip_version'),
+                health_status=health_status,
+                health_issues=env_data.get('health_issues'),
+                activation_count=env_data.get('activation_count'),
+                days_since_used=env_data.get('days_since_used'),
+                linked_projects=[Path(p) for p in env_data['linked_projects']] if env_data.get('linked_projects') else None,
+                is_orphaned=env_data.get('is_orphaned', False),
+                conda_env_name=env_data.get('conda_env_name'),
+                requirements_files=[Path(f) for f in env_data['requirements_files']] if env_data.get('requirements_files') else None,
+            )
+        except Exception:
+            # Fallback to basic environment info if reconstruction fails
+            return EnvironmentInfo(
+                name=env_data.get('name', 'unknown'),
+                path=Path(env_data.get('path', '/')),
+                type=EnvironmentType.UNKNOWN
+            )
     
     def discover_by_type(self, env_type: EnvironmentType, search_paths: Optional[List[Path]] = None) -> List[EnvironmentInfo]:
         """Discover environments of a specific type"""

@@ -188,7 +188,7 @@ class VenvyDisplay:
         healthy = len(health_categories[HealthStatus.HEALTHY])
         issues = total - healthy
         
-        summary_text = f"🏥 Health Report: {healthy}/{total} healthy environments"
+        summary_text = f"Health Report: {healthy}/{total} healthy environments"
         if issues > 0:
             summary_text += f" ({issues} with issues)"
         
@@ -268,7 +268,7 @@ class VenvyDisplay:
         
         # Health distribution
         if summary.health_distribution:
-            self.console.print("\n🏥 Health Distribution:")
+            self.console.print("\nHealth Distribution:")
             for health, count in summary.health_distribution.items():
                 percentage = (count / summary.total_environments) * 100
                 bar_width = int((count / summary.total_environments) * 20)
@@ -290,7 +290,7 @@ class VenvyDisplay:
     
     def show_duplicate_environments(self, duplicate_groups: List[List[EnvironmentInfo]]):
         """Show duplicate environment groups"""
-        self.console.print(f"🔄 Found {len(duplicate_groups)} group(s) of similar environments:\n")
+        self.console.print(f"Found {len(duplicate_groups)} group(s) of similar environments:\n")
         
         total_potential_savings = 0
         
@@ -306,7 +306,7 @@ class VenvyDisplay:
             for env in group:
                 size_display = human_readable_size(env.size_bytes or 0)
                 is_largest = env == largest_env
-                marker = "👑" if is_largest else "🔄"
+                marker = "[L]" if is_largest else "[D]"
                 self.console.print(f"  {marker} {env.name:<20} {size_display:>10} {env.path}")
             
             if potential_savings > 0:
@@ -377,7 +377,7 @@ class VenvyDisplay:
             HealthStatus.UNKNOWN: "dim"
         }.get(env.health_status, "dim")
         
-        panel = Panel(health_text, title="🏥 Health Status", style=health_color, expand=False)
+        panel = Panel(health_text, title="Health Status", style=health_color, expand=False)
         self.console.print(panel)
     
     def _show_size_distribution(self, environments: List[EnvironmentInfo]):

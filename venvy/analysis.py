@@ -45,9 +45,19 @@ class EnvironmentAnalysis:
         Returns:
             Enhanced environment info with analysis results
         """
-        # Calculate size if not already done
+        # Calculate size if not already done (with caching)
         if env_info.size_bytes is None:
-            env_info.size_bytes = get_directory_size(env_info.path)
+            from venvy.performance import EnvironmentCache
+            cache = EnvironmentCache()
+            
+            # Try cached size first
+            cached_size = cache.get_cached_size(env_info.path)
+            if cached_size is not None:
+                env_info.size_bytes = cached_size
+            else:
+                # Calculate and cache size
+                env_info.size_bytes = get_directory_size(env_info.path)
+                cache.cache_size(env_info.path, env_info.size_bytes)
         
         # Analyze packages
         env_info.packages, env_info.package_count = self._analyze_packages(env_info)
@@ -71,15 +81,27 @@ class EnvironmentAnalysis:
         
         return env_info
     
-    def analyze_all_environments(self, environments: List[EnvironmentInfo]) -> List[EnvironmentInfo]:
+    def analyze_all_environments(self, environments: List[EnvironmentInfo], use_parallel: bool = True) -> List[EnvironmentInfo]:
         """Analyze all environments and return enhanced information"""
-        analyzed_environments = []
+        if not environments:
+            return []
         
-        for env_info in environments:
-            analyzed_env = self.analyze_environment(env_info)
-            analyzed_environments.append(analyzed_env)
-        
-        return analyzed_environments
+        # Use parallel processing for better performance
+        if use_parallel and len(environments) > 2:
+            from venvy.performance import ParallelAnalyzer
+            analyzer = ParallelAnalyzer(max_workers=3)  # Conservative worker count
+            return analyzer.analyze_environments_parallel(
+                environments, 
+                self.analyze_environment,
+                timeout_per_env=60  # 60 second timeout per environment
+            )
+        else:
+            # Sequential analysis for small lists or when parallel is disabled
+            analyzed_environments = []
+            for env_info in environments:
+                analyzed_env = self.analyze_environment(env_info)
+                analyzed_environments.append(analyzed_env)
+            return analyzed_environments
     
     def get_system_summary(self, environments: List[EnvironmentInfo]) -> SystemSummary:
         """Generate system-wide summary statistics"""

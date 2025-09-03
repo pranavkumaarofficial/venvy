@@ -2,10 +2,9 @@
 
 **The smartest way to manage Python virtual environments**
 
-[![PyPI version](https://badge.fury.io/py/venvy.svg)](https://pypi.org/project/venvy/)
-[![Python Support](https://img.shields.io/pypi/pyversions/venvy.svg)](https://pypi.org/project/venvy/)
-[![Downloads](https://pepy.tech/badge/venvy)](https://pepy.tech/project/venvy)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![PyPI](https://img.shields.io/pypi/v/venvy.svg)](https://pypi.org/project/venvy/)
+[![Python](https://img.shields.io/pypi/pyversions/venvy.svg)](https://pypi.org/project/venvy/)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/pranavkumaarofficial/venvy/blob/main/LICENSE)
 
 ## What is venvy?
 

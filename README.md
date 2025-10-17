@@ -1,24 +1,27 @@
-# venvy - Python Virtual Environment Manager
+# venvy - Virtual Environment Manager
 
-**The smartest way to manage Python virtual environments**
+**Track and manage Python virtual environments without the slow scanning**
 
 [![PyPI](https://img.shields.io/pypi/v/venvy.svg)](https://pypi.org/project/venvy/)
 [![Python](https://img.shields.io/pypi/pyversions/venvy.svg)](https://pypi.org/project/venvy/)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/pranavkumaarofficial/venvy/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-## What is venvy?
+## The Problem
 
-**venvy** is an intelligent command-line tool that automatically discovers, analyzes, and manages Python virtual environments across your entire system. Stop manually hunting for forgotten environments, wondering which ones are safe to delete, or struggling with disk space issues.
+**Venvs are scattered everywhere** - in project folders, home directory, nested in subdirectories. You create them, forget about them, and they eat up GBs of disk space.
 
-### Key Features
+**Finding them is painfully slow** - Scanning your filesystem to find all venvs takes minutes.
 
-- **🔍 Smart Discovery** - Automatically finds all Python environments (venv, conda, pyenv, virtualenv)
-- **📊 Intelligent Analysis** - Shows usage patterns, disk space, health status, and cleanup suggestions  
-- **🧹 Safe Cleanup** - Remove unused environments with confidence using AI-powered recommendations
-- **💾 Space Management** - Identify space hogs and duplicate environments
-- **🏥 Health Monitoring** - Detect broken, outdated, or corrupted environments
-- **🎨 Beautiful Interface** - Rich terminal output with tables, progress bars, and colors
-- **⚡ Cross-Platform** - Works seamlessly on Windows, macOS, and Linux
+**No central tracking** - You have no idea how many venvs you have, which ones are old, or which projects they belong to.
+
+## The Solution
+
+**venvy uses a registry database** - Track venvs when they're created/used instead of scanning the filesystem every time.
+
+- ✅ **INSTANT lookups** - Query SQLite database instead of scanning directories
+- ✅ **Auto-tracking** - Shell integration automatically registers venvs when activated
+- ✅ **Smart cleanup** - Know which venvs are safe to delete
+- ✅ **Project linking** - See which venv belongs to which project
 
 ## Installation
 
@@ -26,220 +29,327 @@
 pip install venvy
 ```
 
-That's it! No complex setup, no configuration files needed.
-
 ## Quick Start
 
 ```bash
-# List all virtual environments
-venvy list
+# Register your current venv
+venvy register .venv
 
-# Show disk usage analysis  
-venvy size
+# List all registered venvs (INSTANT - no scanning!)
+venvy ls
 
-# Get intelligent cleanup suggestions
-venvy suggest
+# Show statistics
+venvy stats
 
-# Remove unused environments safely
-venvy clean --unused 90
+# See currently active venv
+venvy current
 
-# Get detailed info about an environment
-venvy info myproject-env
+# Find and register all venvs (one-time scan)
+venvy scan --path ~/projects
+
+# Clean up old venvs
+venvy cleanup --days 90
 ```
 
-## Why Choose venvy?
+## Why venvy?
 
-### Problem: Virtual Environment Chaos
-- Forgotten environments scattered across your system
-- Gigabytes of disk space wasted on unused environments
-- No easy way to identify which environments are safe to remove
-- Broken environments that cause mysterious errors
-- Time wasted manually hunting for environment locations
+### Before venvy:
+```bash
+# Find all venvs: scan entire filesystem (2-5 minutes)
+find ~ -name "pyvenv.cfg" -type f  # painful...
 
-### Solution: Intelligent Management
-venvy solves these problems with smart automation:
+# No idea which venvs are safe to delete
+# No tracking of when venvs were last used
+# Can't link venvs to projects
+```
+
+### With venvy:
+```bash
+# List all venvs: query database (instant)
+venvy ls
+
+# See last used dates, sizes, project links
+# Auto-track usage with shell integration
+# Smart cleanup suggestions
+```
+
+## Core Concepts
+
+### Registry-Based Tracking
+
+Instead of scanning directories (slow), venvy maintains a SQLite registry of your venvs:
+
+```
+~/.venvy/venv_registry.db
+├─ venv paths
+├─ project associations
+├─ last used timestamps
+├─ Python versions
+└─ sizes & package counts
+```
+
+### Two-Phase Approach
+
+1. **Register** (one-time or auto): Add venvs to registry
+2. **Query** (instant): List/manage from database
+
+## Commands
+
+### `venvy ls` - List Registered Venvs
+
+**FAST** - Reads from database, no filesystem scanning.
 
 ```bash
-$ venvy list
-Environment         Type    Python    Size      Health      Last Used    
-project1-venv       venv    3.9.7     245 MB    Healthy     2 days ago   
-old-django-project  venv    3.8.0     1.2 GB    Broken      4 months ago 
-data-science        conda   3.10.2    892 MB    Healthy     1 week ago   
-temp-test           venv    3.9.7     156 MB    Outdated    6 months ago 
-
-$ venvy suggest
-Cleanup Suggestions:
-Environment         Reason                           Space    Risk    Confidence
-old-django-project  Broken and unused for 120 days  1.2 GB   Low     95%
-temp-test          Unused for 180 days              156 MB   Low     87%
-
-Potential space savings: 1.4 GB
+venvy ls                    # Show all registered venvs
+venvy ls --sort recent      # Sort by last used
+venvy ls --sort size        # Sort by size
+venvy ls --format json      # JSON output
 ```
 
-## Core Commands
+Example output:
+```
+         Registered Virtual Environments (5 total)
++-----------+--------+----------+--------+-----------+-----------------+
+| Name      | Python | Packages | Size   | Last Used | Project         |
+|-----------+--------+----------+--------+-----------+-----------------|
+| myproject | 3.11.2 |       45 | 123.4MB| 2d ago    | ~/code/myproject|
+| backend   | 3.9.7  |       67 | 234.5MB| 5d ago    | ~/work/backend  |
+| old-proj  | 3.8.0  |       12 |  45.2MB| 120d ago  | ~/old/project   |
++-----------+--------+----------+--------+-----------+-----------------+
 
-### Environment Discovery
+Total: 5 venvs, 403.1MB, 124 packages
+```
+
+### `venvy register` - Register a Venv
+
+Add a venv to the registry:
+
 ```bash
-venvy list                    # List all environments
-venvy list --type conda      # Filter by type (venv, conda, pyenv)  
-venvy list --sort size       # Sort by size, age, or usage
-venvy list --format json     # Machine-readable output
+venvy register .venv                           # Register current dir's venv
+venvy register /path/to/venv                   # Register specific venv
+venvy register .venv --project ~/myproject     # Link to project
+venvy register .venv --name myapp              # Custom name
 ```
 
-### Space Analysis
+**Auto-register**: Install shell hook to auto-register on activation (see below).
+
+### `venvy scan` - Find & Register Existing Venvs
+
+**SLOW** - Only run once or when needed:
+
 ```bash
-venvy size                    # Show environments by size
-venvy size --top 5           # Show 5 largest environments
-venvy duplicates             # Find similar environments
+venvy scan                  # Scan current directory
+venvy scan --path ~/projects# Scan specific path
+venvy scan --home           # Scan home directory (slow!)
+venvy scan --depth 5        # Max depth to search
 ```
 
-### Health & Maintenance
+After scanning once, use `venvy ls` for instant results.
+
+### `venvy current` - Show Active Venv
+
 ```bash
-venvy health                 # Overall health report
-venvy doctor myenv           # Deep health check for specific environment
-venvy stats                  # System-wide statistics
+venvy current
+# Output:
+# Active venv: /home/user/myproject/.venv
+#   Name: myproject
+#   Python: 3.11.2
+#   Project: /home/user/myproject
 ```
 
-### Smart Cleanup
+### `venvy stats` - Show Statistics
+
 ```bash
-venvy suggest                # Get cleanup recommendations
-venvy clean --unused 30      # Remove environments unused for 30+ days
-venvy clean --dry-run        # Preview what would be removed
-venvy remove myenv           # Remove specific environment
+venvy stats
+# Output:
+# Virtual Environment Statistics
+#
+# Total Environments: 12
+# Total Disk Space:   1.2 GB
+# Total Packages:     456
+#
+# Unused 30+ days:    3
+# Unused 90+ days:    7
 ```
 
-## Advanced Features
+### `venvy cleanup` - Remove Old Venvs
 
-### Intelligent Analysis
-venvy doesn't just list environments - it provides insights:
+```bash
+venvy cleanup                   # Remove venvs unused for 90+ days
+venvy cleanup --days 30         # Unused for 30+ days
+venvy cleanup --dry-run         # See what would be removed
+```
 
-- **Usage Tracking**: Knows which environments you actually use
-- **Health Monitoring**: Detects broken Python executables, missing dependencies
-- **Space Optimization**: Identifies duplicate packages and cache bloat  
-- **Project Association**: Links environments to their projects automatically
-- **Security Scanning**: Finds environments with outdated packages
+Example:
+```bash
+$ venvy cleanup --days 90
 
-### Safe Operations
-Every destructive operation includes safety measures:
+Found 3 venv(s) unused for 90+ days:
 
-- **Automatic Backups**: Creates backups before removal
-- **Confidence Scoring**: AI-powered risk assessment for cleanup suggestions
-- **Dry Run Mode**: Preview changes before applying them
-- **Confirmation Prompts**: Prevents accidental deletions
+  old-project - last used 120 days ago (45.2MB)
+  test-env - last used 150 days ago (23.1MB)
+  abandoned - last used 200 days ago (67.8MB)
 
-### Professional Output
-Beautiful, informative displays that work great in terminals and CI/CD:
+Total space: 136.1MB
 
-- **Rich Tables**: Sortable columns with color-coded health indicators
-- **Progress Bars**: Visual feedback for long operations
-- **JSON Export**: Perfect for scripting and automation
-- **Cross-Platform**: Consistent experience across operating systems
+Remove 3 venv(s)? [y/N]: y
 
-## Use Cases
+  + Removed old-project
+  + Removed test-env
+  + Removed abandoned
 
-### For Individual Developers
-- **Clean up development machine**: Remove old project environments safely
-- **Disk space management**: Identify and remove space-wasting environments
-- **Environment health**: Find and fix broken development environments
-- **Project organization**: See which environments belong to which projects
+Removed 3/3 venvs (136.1MB freed)
+```
 
-### For Development Teams  
-- **Standardize environment management**: Consistent cleanup policies across team
-- **CI/CD integration**: Automated environment cleanup in build pipelines
-- **Onboarding**: Help new developers clean up their development setup
-- **Documentation**: Generate environment inventory reports
+### `venvy shell-hook` - Auto-Tracking
 
-### For System Administrators
-- **Server maintenance**: Clean up unused environments on shared development servers
-- **Disk space monitoring**: Proactive identification of space usage issues
-- **Environment auditing**: Security and compliance reporting
-- **Automated cleanup**: Scheduled cleanup of unused environments
+Generate shell integration for automatic tracking:
+
+```bash
+# Bash/Zsh
+venvy shell-hook >> ~/.bashrc
+source ~/.bashrc
+
+# Fish
+venvy shell-hook --shell fish >> ~/.config/fish/config.fish
+
+# PowerShell
+venvy shell-hook --shell powershell >> $PROFILE
+```
+
+After installing, venvs are automatically registered when you activate them!
+
+## Workflow Examples
+
+### New Project Setup
+
+```bash
+# Create project and venv
+mkdir myproject && cd myproject
+python -m venv .venv
+source .venv/bin/activate
+
+# If shell hook installed, it's auto-registered!
+# Otherwise:
+venvy register .venv
+```
+
+### Spring Cleaning
+
+```bash
+# See all venvs
+venvy ls --sort size
+
+# Check statistics
+venvy stats
+
+# Remove old/unused venvs
+venvy cleanup --days 60 --dry-run  # Preview
+venvy cleanup --days 60            # Actually remove
+```
+
+### Project Migration
+
+```bash
+# Find venv for old project
+venvy ls | grep oldproject
+
+# See details
+venvy current  # if activated
+
+# Link to new location
+venvy register .venv --project ~/new/location
+```
 
 ## Technical Details
 
-### Supported Environment Types
-- **venv** - Python 3.3+ built-in virtual environments
-- **virtualenv** - Traditional virtual environment tool
-- **conda** - Anaconda/Miniconda environments
-- **pyenv** - Python version management environments
+### Registry Database
 
-### Detection Methods
-- **Smart Scanning**: Looks in common locations (`~/venvs`, `~/.virtualenvs`, etc.)
-- **Configuration Files**: Reads `pyvenv.cfg`, `conda-meta/`, `.python-version`
-- **Custom Paths**: Supports user-defined search locations
-- **Symbolic Link Resolution**: Handles complex directory structures
+Location: `~/.venvy/venv_registry.db` (SQLite)
 
-### Performance Optimizations
-- **Parallel Processing**: Multi-threaded environment scanning
-- **Smart Caching**: Avoids re-analyzing unchanged environments  
-- **Lazy Loading**: Only analyzes environments when needed
-- **Memory Efficient**: Minimal memory footprint even with hundreds of environments
-
-### Safety Features
-- **Backup Creation**: Automatic backups before destructive operations
-- **Permission Handling**: Graceful handling of permission-denied scenarios
-- **Error Recovery**: Robust error handling and reporting
-- **Verification**: Confirms successful operations
-
-## Configuration
-
-venvy works perfectly out-of-the-box, but can be customized:
-
-```bash
-# Add custom search paths
-venvy config --add-path ~/my-projects/envs
-
-# Set default cleanup threshold
-venvy config --set default-unused-days 60
-
-# Configure output format
-venvy config --set output-format table
+Schema:
+```sql
+CREATE TABLE venvs (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    path TEXT UNIQUE NOT NULL,
+    project_path TEXT,
+    python_version TEXT,
+    created_at TEXT,
+    last_used_at TEXT,
+    size_mb REAL,
+    package_count INTEGER,
+    notes TEXT
+);
 ```
 
-Configuration is stored in your system's standard config directory and syncs across sessions.
+### Performance
 
-## Python Virtual Environment Management Best Practices
+| Operation | Time |
+|-----------|------|
+| `venvy ls` | < 10ms |
+| `venvy register` | ~ 100ms |
+| `venvy scan ~/projects` | Varies (filesystem-dependent) |
+| `venvy stats` | < 10ms |
 
-venvy embodies Python virtual environment best practices:
+### Cross-Platform
 
-1. **Regular Cleanup**: Remove unused environments to free disk space
-2. **Health Monitoring**: Keep environments updated and functional
-3. **Organization**: Maintain clear project-environment associations
-4. **Documentation**: Know what environments you have and why
-5. **Automation**: Use tools like venvy instead of manual management
+- ✅ Linux
+- ✅ macOS
+- ✅ Windows
+
+Handles platform-specific venv structures automatically.
+
+## Comparison with Other Tools
+
+| Tool | Tracks Venvs | Fast Lookups | Auto-Register | Cleanup |
+|------|--------------|--------------|---------------|---------|
+| **venvy** | ✅ | ✅ (database) | ✅ (shell hook) | ✅ |
+| virtualenvwrapper | ✅ | ✅ | ❌ | ❌ |
+| pyenv | ❌ | N/A | ❌ | ❌ |
+| conda | ✅ (conda only) | ✅ | ❌ | ❌ |
+
+**venvy advantage**: Works with ANY venv (venv, virtualenv, conda) and provides centralized tracking + cleanup.
 
 ## FAQ
 
-**Q: Is it safe to use venvy to delete environments?**  
-A: Yes! venvy creates automatic backups and uses confidence scoring to ensure safe cleanup recommendations.
+**Q: Does this replace virtualenv/venv?**
+A: No! venvy works WITH your existing venv tools. It just tracks and manages them better.
 
-**Q: Will venvy work with my existing environments?**  
-A: Absolutely. venvy works with all standard Python environment tools and doesn't modify your existing setup.
+**Q: Will it slow down my shell?**
+A: No. The shell hook only runs when you activate a venv, and registration takes ~100ms.
 
-**Q: Can I use venvy in scripts or CI/CD?**  
-A: Yes! venvy supports JSON output, quiet modes, and non-interactive operation perfect for automation.
+**Q: What if I delete a venv manually?**
+A: Run `venvy ls` and the entry will show the path no longer exists. Or use `venvy cleanup-registry` to remove dead entries.
 
-**Q: Does venvy require admin/root privileges?**  
-A: No. venvy only needs access to your user directories and respects file permissions.
+**Q: Can I use this with conda environments?**
+A: Yes! venvy detects and tracks conda envs too.
+
+**Q: Does it work with nested venvs?**
+A: Yes, though it's recommended to avoid nested venvs in general.
+
+## Development
+
+```bash
+git clone https://github.com/pranavkumaarofficial/venvy
+cd venvy
+pip install -e ".[dev]"
+pytest
+```
 
 ## Contributing
 
-We welcome contributions! venvy is open source and community-driven.
+Issues and PRs welcome!
 
-- **Bug Reports**: [GitHub Issues](https://github.com/pranavkumaarofficial/venvy/issues)
-- **Feature Requests**: [GitHub Discussions](https://github.com/pranavkumaarofficial/venvy/discussions)
-- **Code Contributions**: [Pull Requests](https://github.com/pranavkumaarofficial/venvy/pulls)
+- Bug Reports: [GitHub Issues](https://github.com/pranavkumaarofficial/venvy/issues)
+- Feature Requests: [Discussions](https://github.com/pranavkumaarofficial/venvy/discussions)
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
-
-## Keywords
-
-Python virtual environment manager, venv cleanup, conda environment management, Python development tools, disk space cleanup, environment health monitoring, Python project management, development workflow optimization, virtual environment discovery, Python environment analysis
+MIT - see [LICENSE](LICENSE)
 
 ---
 
-**Made with ❤️ by [Pranav Kumaar](https://github.com/pranavkumaarofficial)**
+**Made by [Pranav Kumaar](https://github.com/pranavkumaarofficial)**
 
-*venvy - Because managing Python virtual environments should be intelligent, not manual.*
+*venvy - Virtual environment management without the pain*

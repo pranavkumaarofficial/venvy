@@ -233,10 +233,16 @@ def get_python_version(python_executable: Path) -> Optional[str]:
 def normalize_path(path: Path) -> Path:
     """Normalize a path for consistent comparison"""
     try:
-        return path.resolve()
+        resolved = path.resolve()
+        if not resolved.is_absolute():
+            return (Path.cwd() / path).resolve()
+        return resolved
     except (OSError, RuntimeError):
         # resolve() can fail on broken symlinks
-        return path.absolute()
+        absolute = path.absolute()
+        if not absolute.is_absolute():
+            return (Path.cwd() / path).absolute()
+        return absolute
 
 
 def is_environment_active(env_path: Path) -> bool:

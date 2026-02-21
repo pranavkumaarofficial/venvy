@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>venvy • Registry Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <div class="logo">v</div>
+          <div class="brand-text">
+            <div class="title">venvy</div>
+            <div class="subtitle">Registry Dashboard</div>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <button class="chip active">Registry</button>
+          <button class="chip">Scan</button>
+          <button class="chip">Cleanup</button>
+          <button class="primary">Create Report</button>
+        </div>
+      </header>
+
+      <section class="hero">
+        <div class="hero-copy">
+          <span class="eyebrow">Material 3 • Registry-first</span>
+          <h1>Instant visibility. Real control.</h1>
+          <p>
+            Venvy tracks environments at activation. No rescans, no guesswork. The
+            registry powers the full lifecycle: usage, health, size, and cleanup.
+          </p>
+          <div class="hero-actions">
+            <button class="primary">Run Suggest</button>
+            <button class="ghost">Refresh Metadata</button>
+          </div>
+        </div>
+        <div class="hero-card">
+          <div class="metric">
+            <span class="metric-label">Total Environments</span>
+            <span class="metric-value" id="metric-total">0</span>
+            <span class="metric-sub">registry count</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Tracked Disk Size</span>
+            <span class="metric-value" id="metric-size">0.0 MB</span>
+            <span class="metric-sub">registry size</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Missing on Disk</span>
+            <span class="metric-value warning" id="metric-missing">0</span>
+            <span class="metric-sub">cleanup-registry recommended</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="grid">
+        <div class="card wide">
+          <div class="card-header">
+            <div>
+              <h2>Environment Registry</h2>
+              <p>Live snapshot from registry (fast path)</p>
+            </div>
+            <div class="actions">
+              <button class="ghost">Sort: Recent</button>
+              <button class="ghost">Hide Missing</button>
+            </div>
+          </div>
+          <div class="table">
+            <div class="row header">
+              <span>Name</span>
+              <span>Status</span>
+              <span>Python</span>
+              <span>Packages</span>
+              <span>Size</span>
+              <span>Last Used</span>
+              <span>Project</span>
+            </div>
+            <div class="row">
+              <span class="pill">.venv</span>
+              <span class="status ok">active</span>
+              <span>3.11.7</span>
+              <span>48</span>
+              <span>412 MB</span>
+              <span>today</span>
+              <span>~/projects/venvy</span>
+            </div>
+            <div class="row">
+              <span class="pill">api-backend</span>
+              <span class="status">healthy</span>
+              <span>3.10.13</span>
+              <span>92</span>
+              <span>684 MB</span>
+              <span>3d ago</span>
+              <span>~/work/api</span>
+            </div>
+            <div class="row">
+              <span class="pill">old-exp</span>
+              <span class="status warn">missing</span>
+              <span>3.9.18</span>
+              <span>12</span>
+              <span>91 MB</span>
+              <span>5mo ago</span>
+              <span>~/archive/exp</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>Cleanup Signals</h2>
+              <p>Confidence-based suggestions</p>
+            </div>
+            <button class="ghost" id="refresh-ui">Refresh</button>
+          </div>
+          <div id="suggestions">
+            <div class="muted">Loading suggestions...</div>
+          </div>
+          <button class="primary full">Clean Safe Suggestions</button>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>Health Distribution</h2>
+              <p>System-wide status mix</p>
+            </div>
+          </div>
+          <div class="health" id="health-bars">
+            <div class="bar">
+              <span>Healthy</span>
+              <span>7</span>
+              <div class="track">
+                <div class="fill good" style="width: 58%"></div>
+              </div>
+            </div>
+            <div class="bar">
+              <span>Warning</span>
+              <span>3</span>
+              <div class="track">
+                <div class="fill warn" style="width: 25%"></div>
+              </div>
+            </div>
+            <div class="bar">
+              <span>Broken</span>
+              <span>2</span>
+              <div class="track">
+                <div class="fill bad" style="width: 17%"></div>
+              </div>
+            </div>
+          </div>
+          <div class="pill-row">
+            <span class="pill soft">Packages tracked: <strong id="metric-packages">0</strong></span>
+            <span class="pill soft">Unused 90+ days: <strong id="metric-unused">0</strong></span>
+          </div>
+        </div>
+
+        <div class="card wide">
+          <div class="card-header">
+            <div>
+              <h2>Usage & Storage</h2>
+              <p>Where your disk space is going</p>
+            </div>
+            <button class="ghost">Refresh</button>
+          </div>
+          <div class="storage">
+            <div class="donut">
+              <div class="donut-core" id="metric-size-compact">0.0 MB</div>
+            </div>
+            <div class="storage-list" id="storage-list">
+              <div class="muted">Loading...</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+    <script src="app.js"></script>
+  </body>
+</html>

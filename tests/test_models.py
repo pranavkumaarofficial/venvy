@@ -64,7 +64,7 @@ class TestEnvironmentInfo:
         )
         
         assert isinstance(env_info.path, Path)
-        assert str(env_info.path) == "/test/string/path"
+        assert env_info.path == Path("/test/string/path")
     
     def test_environment_info_size_human(self):
         """Test human-readable size property"""
@@ -140,7 +140,7 @@ class TestEnvironmentInfo:
         
         assert isinstance(result, dict)
         assert result["name"] == "test_env"
-        assert result["path"] == "/test/path"
+        assert Path(result["path"]) == Path("/test/path")
         assert result["type"] == "venv"
         assert result["python_version"] == "3.9.7"
         assert result["size_bytes"] == 1024000

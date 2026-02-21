@@ -106,16 +106,21 @@ class TestFileOperations:
     
     def test_safe_read_file_exists(self):
         """Test reading existing file"""
-        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
+        f = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt')
+        try:
             test_content = "Test file content"
             f.write(test_content)
             f.flush()
-            
+            f.close()
+
+            content = safe_read_file(Path(f.name))
+            assert content == test_content
+        finally:
             try:
-                content = safe_read_file(Path(f.name))
-                assert content == test_content
-            finally:
-                os.unlink(f.name)
+                f.close()
+            except Exception:
+                pass
+            os.unlink(f.name)
     
     def test_safe_read_file_nonexistent(self):
         """Test reading non-existent file"""

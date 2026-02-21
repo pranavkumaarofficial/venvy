@@ -1,4 +1,4 @@
-"""
+﻿"""
 Command-line interface for venvy
 Provides beautiful, intuitive commands for managing Python virtual environments
 """
@@ -66,7 +66,6 @@ def main(ctx, verbose):
 def list(ctx, path, env_type, output_format, sort_by, fast, thorough):
     """List all Python virtual environments"""
     
-    discovery = EnvironmentDiscovery()
     analysis = EnvironmentAnalysis()
     
     with Progress(
@@ -129,7 +128,6 @@ def list(ctx, path, env_type, output_format, sort_by, fast, thorough):
 def size(ctx, path, top, output_format):
     """Show environment sizes and disk usage"""
     
-    discovery = EnvironmentDiscovery()
     analysis = EnvironmentAnalysis()
     
     with Progress(
@@ -182,7 +180,7 @@ def info(ctx, environment, path):
     env_info = discovery.find_environment(environment)
     
     if not env_info:
-        console.print(f"❌ Environment '{environment}' not found")
+        console.print(f"âŒ Environment '{environment}' not found")
         return
     
     # Analyze the environment
@@ -191,9 +189,9 @@ def info(ctx, environment, path):
         TextColumn("[progress.description]{task.description}"),
         console=console
     ) as progress:
-        task = progress.add_task("🔍 Analyzing environment...", total=None)
+        task = progress.add_task("ðŸ” Analyzing environment...", total=None)
         analyzed_env = analysis.analyze_environment(env_info)
-        progress.update(task, description="✅ Analysis complete")
+        progress.update(task, description="âœ… Analysis complete")
     
     display.show_environment_details(analyzed_env)
 
@@ -219,10 +217,10 @@ def health(ctx, path):
         environments = discovery.discover_all(search_paths)
         environments = analysis.analyze_all_environments(environments)
         
-        progress.update(task, description="✅ Health check complete")
+        progress.update(task, description="âœ… Health check complete")
     
     if not environments:
-        console.print("🤔 No environments found to check.")
+        console.print("ðŸ¤” No environments found to check.")
         return
     
     display.show_health_report(environments)
@@ -231,11 +229,14 @@ def health(ctx, path):
 @main.command()
 @click.option('--path', '-p', type=click.Path(exists=True, path_type=Path),
               help='Search path for environments')
+@click.option('--scan', is_flag=True, help='Use filesystem scan instead of registry')
 @click.option('--max-suggestions', '-n', type=int, default=10,
               help='Maximum number of suggestions to show')
+@click.option('--min-confidence', type=float, default=0.5,
+              help='Minimum confidence threshold (0.0 - 1.0)')
 @click.pass_context
-def suggest(ctx, path, max_suggestions):
-    """💡 Get intelligent cleanup suggestions"""
+def suggest(ctx, path, scan, max_suggestions, min_confidence):
+    """ðŸ’¡ Get intelligent cleanup suggestions"""
     
     discovery = EnvironmentDiscovery()
     analysis = EnvironmentAnalysis()
@@ -245,20 +246,64 @@ def suggest(ctx, path, max_suggestions):
         TextColumn("[progress.description]{task.description}"),
         console=console
     ) as progress:
-        task = progress.add_task("🧠 Generating suggestions...", total=None)
+        task = progress.add_task("ðŸ§  Generating suggestions...", total=None)
         
-        search_paths = [path] if path else None
-        environments = discovery.discover_all(search_paths)
-        environments = analysis.analyze_all_environments(environments)
+        suggestions = []
+        environments = []
+
+        if scan or path:
+            discovery = EnvironmentDiscovery()
+            search_paths = [path] if path else None
+            environments = discovery.discover_all(search_paths)
+            environments = analysis.analyze_all_environments(environments)
+            suggestions = analysis.generate_cleanup_suggestions(environments)
+        else:
+            from venvy.registry import VenvRegistry
+            from venvy.models import EnvironmentInfo, EnvironmentType, HealthStatus
+
+            registry = VenvRegistry()
+            records = registry.list_all()
+
+            for record in records:
+                size_bytes = int(record.size_mb * 1024 * 1024) if record.size_mb else None
+                days_since_used = None
+                if record.last_used_at:
+                    try:
+                        dt = datetime.fromisoformat(record.last_used_at.replace("T", " "))
+                        days_since_used = (datetime.now() - dt).days
+                    except Exception:
+                        pass
+
+                env = EnvironmentInfo(
+                    name=record.name,
+                    path=Path(record.path),
+                    type=EnvironmentType.UNKNOWN,
+                    python_version=record.python_version,
+                    size_bytes=size_bytes,
+                    package_count=record.package_count,
+                    health_status=HealthStatus.UNKNOWN,
+                    activation_count=record.activation_count,
+                    days_since_used=days_since_used,
+                    linked_projects=[Path(record.project_path)] if record.project_path else None,
+                    is_orphaned=record.project_path is None
+                )
+                environments.append(env)
+
+            suggestions = analysis.generate_cleanup_suggestions(environments)
         
-        suggestions = analysis.generate_cleanup_suggestions(environments)
-        
-        progress.update(task, description="✅ Analysis complete")
+        progress.update(task, description="âœ… Analysis complete")
     
     if not suggestions:
-        console.print("🎉 No cleanup suggestions needed! Your environments look good.")
+        if scan or path:
+            console.print("No cleanup suggestions needed! Your environments look good.")
+        else:
+            console.print("[yellow]No suggestions from registry data.[/yellow]")
+            console.print("[dim]Try 'venvy suggest --scan' or 'venvy suggest --path <dir>' for deeper analysis.[/dim]")
         return
     
+    # Filter by confidence
+    suggestions = [s for s in suggestions if s.confidence >= min_confidence]
+
     # Limit suggestions
     if max_suggestions and len(suggestions) > max_suggestions:
         suggestions = suggestions[:max_suggestions]
@@ -266,12 +311,12 @@ def suggest(ctx, path, max_suggestions):
     display.show_cleanup_suggestions(suggestions)
 
 
-@main.command()
+@main.command('scan-stats')
 @click.option('--path', '-p', type=click.Path(exists=True, path_type=Path),
               help='Search path for environments')
 @click.pass_context
-def stats(ctx, path):
-    """📊 Show system-wide environment statistics"""
+def scan_stats(ctx, path):
+    """ðŸ“Š Show system-wide environment statistics"""
     
     discovery = EnvironmentDiscovery()
     analysis = EnvironmentAnalysis()
@@ -281,7 +326,7 @@ def stats(ctx, path):
         TextColumn("[progress.description]{task.description}"),
         console=console
     ) as progress:
-        task = progress.add_task("📈 Gathering statistics...", total=None)
+        task = progress.add_task("ðŸ“ˆ Gathering statistics...", total=None)
         
         search_paths = [path] if path else None
         environments = discovery.discover_all(search_paths)
@@ -289,7 +334,7 @@ def stats(ctx, path):
         
         summary = analysis.get_system_summary(environments)
         
-        progress.update(task, description="✅ Statistics complete")
+        progress.update(task, description="âœ… Statistics complete")
     
     display.show_system_summary(summary, environments)
 
@@ -309,7 +354,7 @@ def duplicates(ctx, path):
         TextColumn("[progress.description]{task.description}"),
         console=console
     ) as progress:
-        task = progress.add_task("🔍 Finding duplicate environments...", total=None)
+        task = progress.add_task("ðŸ” Finding duplicate environments...", total=None)
         
         search_paths = [path] if path else None
         environments = discovery.discover_all(search_paths)
@@ -317,10 +362,10 @@ def duplicates(ctx, path):
         
         duplicate_groups = analysis.find_duplicate_environments(environments)
         
-        progress.update(task, description="✅ Analysis complete")
+        progress.update(task, description="âœ… Analysis complete")
     
     if not duplicate_groups:
-        console.print("✨ No duplicate environments found!")
+        console.print("âœ¨ No duplicate environments found!")
         return
     
     display.show_duplicate_environments(duplicate_groups)
@@ -331,7 +376,7 @@ def duplicates(ctx, path):
 @click.option('--force', '-f', is_flag=True, help='Skip confirmation prompt')
 @click.pass_context
 def remove(ctx, environment, force):
-    """🗑️ Remove a specific environment"""
+    """ðŸ—‘ï¸ Remove a specific environment"""
     
     discovery = EnvironmentDiscovery()
     
@@ -339,11 +384,11 @@ def remove(ctx, environment, force):
     env_info = discovery.find_environment(environment)
     
     if not env_info:
-        console.print(f"❌ Environment '{environment}' not found")
+        console.print(f"âŒ Environment '{environment}' not found")
         return
     
     # Show what will be removed
-    console.print(f"📍 Found environment: [bold]{env_info.name}[/bold]")
+    console.print(f"ðŸ“ Found environment: [bold]{env_info.name}[/bold]")
     console.print(f"   Path: {env_info.path}")
     if env_info.size_bytes:
         console.print(f"   Size: {human_readable_size(env_info.size_bytes)}")
@@ -351,7 +396,7 @@ def remove(ctx, environment, force):
     # Confirm removal
     if not force:
         if not Confirm.ask(f"Are you sure you want to remove '{env_info.name}'?"):
-            console.print("❌ Removal cancelled")
+            console.print("âŒ Removal cancelled")
             return
     
     # Remove the environment using cleanup module
@@ -359,12 +404,12 @@ def remove(ctx, environment, force):
     success = cleanup.remove_environment(env_info, create_backup=True)
     
     if success:
-        console.print(f"✅ Successfully removed '{env_info.name}'")
+        console.print(f"âœ… Successfully removed '{env_info.name}'")
         if env_info.size_bytes:
             console.print(f"   Freed {human_readable_size(env_info.size_bytes)} of disk space")
-        console.print("   💾 Backup created for safety")
+        console.print("   ðŸ’¾ Backup created for safety")
     else:
-        console.print(f"❌ Failed to remove environment")
+        console.print(f"âŒ Failed to remove environment")
         sys.exit(1)
 
 
@@ -387,7 +432,7 @@ def clean(ctx, unused_days, dry_run, force, path):
         TextColumn("[progress.description]{task.description}"),
         console=console
     ) as progress:
-        task = progress.add_task("🔍 Finding environments to clean...", total=None)
+        task = progress.add_task("ðŸ” Finding environments to clean...", total=None)
         
         search_paths = [path] if path else None
         environments = discovery.discover_all(search_paths)
@@ -401,30 +446,30 @@ def clean(ctx, unused_days, dry_run, force, path):
                 env.health_status != HealthStatus.HEALTHY):
                 to_remove.append(env)
         
-        progress.update(task, description="✅ Analysis complete")
+        progress.update(task, description="âœ… Analysis complete")
     
     if not to_remove:
-        console.print(f"✨ No environments found that are unused for {unused_days}+ days")
+        console.print(f"âœ¨ No environments found that are unused for {unused_days}+ days")
         return
     
     # Show what will be removed
     total_size = sum(env.size_bytes or 0 for env in to_remove)
     
-    console.print(f"\n🧹 Found {len(to_remove)} environment(s) to clean:")
+    console.print(f"\nðŸ§¹ Found {len(to_remove)} environment(s) to clean:")
     for env in to_remove:
-        status_icon = "💀" if env.health_status == HealthStatus.BROKEN else "⚠️"
+        status_icon = "ðŸ’€" if env.health_status == HealthStatus.BROKEN else "âš ï¸"
         console.print(f"   {status_icon} {env.name} ({human_readable_size(env.size_bytes or 0)}) - {env.days_since_used} days unused")
     
-    console.print(f"\n💾 Total space to recover: [bold]{human_readable_size(total_size)}[/bold]")
+    console.print(f"\nðŸ’¾ Total space to recover: [bold]{human_readable_size(total_size)}[/bold]")
     
     if dry_run:
-        console.print("\n[dim]🔍 Dry run complete - no environments were actually removed[/dim]")
+        console.print("\n[dim]ðŸ” Dry run complete - no environments were actually removed[/dim]")
         return
     
     # Confirm removal
     if not force:
         if not Confirm.ask(f"Remove {len(to_remove)} environment(s)?"):
-            console.print("❌ Cleanup cancelled")
+            console.print("âŒ Cleanup cancelled")
             return
     
     # Remove environments using cleanup module
@@ -437,18 +482,18 @@ def clean(ctx, unused_days, dry_run, force, path):
     
     # Show individual results
     for env in results['success']:
-        console.print(f"✅ Removed {env.name}")
+        console.print(f"âœ… Removed {env.name}")
     
     for env in results['failed']:
-        console.print(f"❌ Failed to remove {env.name}")
+        console.print(f"âŒ Failed to remove {env.name}")
     
-    console.print(f"\n🎉 Cleanup complete!")
+    console.print(f"\nðŸŽ‰ Cleanup complete!")
     console.print(f"   Removed: {removed_count} environment(s)")
     if failed_count > 0:
         console.print(f"   Failed: {failed_count} environment(s)")
     console.print(f"   Space freed: {human_readable_size(removed_size)}")
     if removed_count > 0:
-        console.print("   💾 Backups created for safety")
+        console.print("   ðŸ’¾ Backups created for safety")
 
 
 @main.command()
@@ -589,7 +634,7 @@ def track(name_or_path):
         return
 
     registry = VenvRegistry()
-    registry.update_last_used(Path(name_or_path))
+    registry.track_activation(Path(name_or_path), project_path=Path.cwd())
 
 
 @main.command('ls')
@@ -597,7 +642,8 @@ def track(name_or_path):
               default='recent', help='Sort by field')
 @click.option('--format', '-f', type=click.Choice(['table', 'json', 'simple']),
               default='table', help='Output format')
-def ls_command(sort, format):
+@click.option('--hide-missing', is_flag=True, help='Hide entries whose paths are missing')
+def ls_command(sort, format, hide_missing):
     """List all registered venvs (INSTANT - no scanning!)
 
     This is FAST because it reads from the registry database
@@ -608,7 +654,28 @@ def ls_command(sort, format):
     from venvy.registry import VenvRegistry
 
     registry = VenvRegistry()
-    venvs = registry.list_all(sort_by='last_used_at' if sort == 'recent' else sort)
+    if sort == 'recent':
+        sort_key = 'last_used_at'
+    elif sort == 'project':
+        sort_key = 'project_path'
+    elif sort == 'size':
+        sort_key = 'size_mb'
+    else:
+        sort_key = sort
+    venvs = registry.list_all(sort_by=sort_key)
+
+    filtered = []
+    for v in venvs:
+        exists = Path(v.path).exists()
+        is_missing = not exists
+        if v.missing != is_missing:
+            registry.mark_missing(Path(v.path), is_missing)
+            v.missing = is_missing
+        if hide_missing and is_missing:
+            continue
+        filtered.append(v)
+
+    venvs = filtered
 
     if not venvs:
         console.print("[yellow]No registered venvs found[/yellow]")
@@ -623,11 +690,13 @@ def ls_command(sort, format):
         console.print_json(json.dumps(data, indent=2))
     elif format == 'simple':
         for v in venvs:
-            console.print(f"{v.name} -> {v.path}")
+            suffix = " [missing]" if v.missing else ""
+            console.print(f"{v.name} -> {v.path}{suffix}")
     else:
         # Table format
         table = Table(title=f"Registered Virtual Environments ({len(venvs)} total)")
         table.add_column("Name", style="cyan")
+        table.add_column("Status", style="yellow")
         table.add_column("Python", style="green")
         table.add_column("Packages", justify="right")
         table.add_column("Size", justify="right")
@@ -656,6 +725,7 @@ def ls_command(sort, format):
 
             table.add_row(
                 v.name,
+                "missing" if v.missing else "",
                 v.python_version or "?",
                 str(v.package_count) if v.package_count else "?",
                 f"{v.size_mb:.1f}MB" if v.size_mb else "?",
@@ -668,6 +738,8 @@ def ls_command(sort, format):
         # Show stats
         stats = registry.get_stats()
         console.print(f"\n[dim]Total: {stats['total_venvs']} venvs, {stats['total_size_mb']:.1f}MB, {stats['total_packages']} packages[/dim]")
+        if stats.get('missing_venvs', 0) > 0:
+            console.print(f"[yellow]{stats['missing_venvs']} venvs missing on disk (run 'venvy cleanup-registry')[/yellow]")
         if stats['unused_90_days'] > 0:
             console.print(f"[yellow]{stats['unused_90_days']} venvs unused for 90+ days[/yellow]")
 
@@ -800,6 +872,153 @@ def cleanup(days, dry_run):
     console.print(f"\n[green]Removed {removed}/{len(to_remove)} venvs ({total_size:.1f}MB freed)[/green]")
 
 
+@main.command()
+@click.option('--all', 'refresh_all', is_flag=True, help='Refresh all registered venvs')
+@click.option('--path', '-p', type=click.Path(exists=True, path_type=Path),
+              help='Refresh a specific venv path')
+@click.option('--name', '-n', help='Refresh a venv by registered name')
+@click.option('--max', 'max_count', type=int, default=0, help='Limit number of venvs to refresh')
+@click.option('--stale-days', type=int, default=7, help='Refresh only if cache is older than N days')
+@click.option('--force', is_flag=True, help='Refresh even if cache is recent')
+def refresh(refresh_all, path, name, max_count, stale_days, force):
+    """Refresh cached size/package metadata for registered venvs"""
+    from venvy.registry import VenvRegistry
+
+    registry = VenvRegistry()
+
+    targets = []
+    if path:
+        targets = [registry.get(str(Path(path).resolve()))]
+    elif name:
+        targets = [registry.get(name)]
+    elif refresh_all:
+        targets = registry.list_all()
+    else:
+        console.print("[yellow]Specify --all, --path, or --name[/yellow]")
+        return
+
+    targets = [t for t in targets if t is not None]
+    if not targets:
+        console.print("[yellow]No matching venvs found[/yellow]")
+        return
+
+    if max_count and len(targets) > max_count:
+        targets = targets[:max_count]
+
+    def _is_stale(ts: Optional[str], days: int) -> bool:
+        if not ts:
+            return True
+        try:
+            cached_at = datetime.fromisoformat(ts)
+        except ValueError:
+            return True
+        return (datetime.now() - cached_at).days >= days
+
+    refreshed = 0
+    skipped = 0
+    missing = 0
+
+    for v in targets:
+        if not force:
+            size_stale = _is_stale(v.size_mb_cached_at, stale_days)
+            pkg_stale = _is_stale(v.packages_cached_at, stale_days)
+            if not (size_stale or pkg_stale):
+                skipped += 1
+                continue
+
+        ok = registry.refresh_metadata(Path(v.path))
+        if ok:
+            refreshed += 1
+        else:
+            missing += 1
+
+    console.print(f"[green]Refreshed: {refreshed}[/green]")
+    if skipped:
+        console.print(f"[dim]Skipped (fresh): {skipped}[/dim]")
+    if missing:
+        console.print(f"[yellow]Missing on disk: {missing}[/yellow]")
+
+
+@main.command()
+def doctor():
+    """Diagnose common setup and registry issues"""
+    from venvy.registry import VenvRegistry
+    import os
+
+    console.print(Panel.fit("[bold cyan]Venvy Doctor[/bold cyan]"))
+
+    registry = VenvRegistry()
+
+    # Registry DB availability
+    try:
+        db_path = registry.db_path
+        if db_path.exists():
+            console.print(f"[green]OK[/green] Registry DB: {db_path}")
+        else:
+            console.print(f"[red]MISSING[/red] Registry DB not found at {db_path}")
+    except Exception as e:
+        console.print(f"[red]ERROR[/red] Registry DB check failed: {e}")
+
+    # Stats / missing entries
+    try:
+        stats = registry.get_stats()
+        console.print(f"[green]OK[/green] Registry entries: {stats['total_venvs']}")
+        if stats.get('missing_venvs', 0) > 0:
+            console.print(f"[yellow]WARN[/yellow] Missing on disk: {stats['missing_venvs']} (run 'venvy cleanup-registry')")
+        else:
+            console.print("[green]OK[/green] No missing entries detected")
+    except Exception as e:
+        console.print(f"[red]ERROR[/red] Registry stats failed: {e}")
+
+    # Shell hook presence (best-effort)
+    try:
+        from venvy.shell_integration import get_shell_config_path
+        config_path = get_shell_config_path()
+
+        if not config_path:
+            # PowerShell profiles (common locations)
+            home = Path.home()
+            candidates = [
+                home / "Documents" / "PowerShell" / "Microsoft.PowerShell_profile.ps1",
+                home / "Documents" / "WindowsPowerShell" / "Microsoft.PowerShell_profile.ps1",
+            ]
+            for candidate in candidates:
+                if candidate.exists():
+                    config_path = candidate
+                    break
+
+        if config_path and config_path.exists():
+            try:
+                content = config_path.read_text(encoding="utf-8", errors="ignore")
+                if "venvy shell-hook" in content or "venvy_track_activation" in content or "Venvy-Track-Activation" in content:
+                    console.print(f"[green]OK[/green] Shell hook detected in {config_path}")
+                else:
+                    console.print(f"[yellow]WARN[/yellow] Shell hook not detected in {config_path}")
+                    console.print("[dim]Install with: venvy shell-hook >> $PROFILE[/dim]")
+            except Exception:
+                console.print(f"[yellow]WARN[/yellow] Could not read shell config: {config_path}")
+        else:
+            shell = os.environ.get("SHELL") or "unknown"
+            console.print(f"[yellow]WARN[/yellow] Shell config not found (SHELL={shell})")
+            console.print("[dim]PowerShell users can run: venvy shell-hook --shell powershell >> $PROFILE[/dim]")
+    except Exception as e:
+        console.print(f"[yellow]WARN[/yellow] Shell hook check failed: {e}")
+
+
+@main.command('cleanup-registry')
+def cleanup_registry():
+    """Remove registry entries that point to missing venv paths"""
+    from venvy.registry import VenvRegistry
+
+    registry = VenvRegistry()
+    removed = registry.cleanup_missing()
+
+    if removed == 0:
+        console.print("[green]Registry is clean. No missing entries found.[/green]")
+    else:
+        console.print(f"[yellow]Removed {removed} missing registry entries.[/yellow]")
+
+
 @main.command('shell-hook')
 @click.option('--shell', type=click.Choice(['bash', 'zsh', 'fish', 'powershell']),
               help='Shell type (auto-detected if not specified)')
@@ -843,6 +1062,22 @@ def shell_hook(shell):
 
 
 @main.command()
+@click.option('--port', type=int, default=5173, help='Port for the UI server')
+def ui(port):
+    """Start the local venvy UI"""
+    import subprocess
+    from pathlib import Path
+
+    ui_script = Path(__file__).resolve().parents[1] / "ui" / "serve.py"
+    if not ui_script.exists():
+        console.print("[red]UI server not found. Expected ui/serve.py[/red]")
+        return
+
+    console.print(f"[green]Starting UI on http://127.0.0.1:{port}[/green]")
+    subprocess.run([sys.executable, str(ui_script), str(port)])
+
+
+@main.command()
 def stats():
     """Show statistics about your venvs"""
     from venvy.registry import VenvRegistry
@@ -864,3 +1099,4 @@ Unused 90+ days:    {stats['unused_90_days']}
 
 if __name__ == '__main__':
     main()
+

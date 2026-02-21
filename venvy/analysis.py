@@ -462,45 +462,75 @@ class EnvironmentAnalysis:
         """Evaluate if an environment should be suggested for cleanup"""
         reasons = []
         confidence = 0.0
-        risk_level = "low"
-        
-        # Check if environment is broken
+        risk_level = "medium"
+
+        # Broken environments are strong candidates
         if env.health_status == HealthStatus.BROKEN:
-            reasons.append("Environment is broken and cannot be used")
-            confidence += 0.9
+            reasons.append("Environment is broken")
+            confidence += 0.6
             risk_level = "low"
-        
-        # Check if environment hasn't been used in a long time
+
+        # Usage-based signals
         if env.days_since_used is not None:
-            if env.days_since_used > 180:  # 6 months
+            if env.days_since_used >= 365:
                 reasons.append(f"Not used for {env.days_since_used} days")
-                confidence += 0.8
-            elif env.days_since_used > 90:  # 3 months
+                confidence += 0.5
+                risk_level = "low"
+            elif env.days_since_used >= 180:
                 reasons.append(f"Not used for {env.days_since_used} days")
-                confidence += 0.6
+                confidence += 0.4
+                risk_level = "low"
+            elif env.days_since_used >= 90:
+                reasons.append(f"Not used for {env.days_since_used} days")
+                confidence += 0.3
                 risk_level = "medium"
-        
-        # Check if environment is orphaned (no linked projects)
-        if env.is_orphaned and not env.name.lower() in ["base", "root", "default"]:
+            elif env.days_since_used >= 45:
+                reasons.append(f"Not used for {env.days_since_used} days")
+                confidence += 0.15
+                risk_level = "medium"
+
+        # Activation count signal
+        if env.activation_count is not None and env.activation_count == 0:
+            reasons.append("Never activated (no usage history)")
+            confidence += 0.15
+
+        # Orphaned environments are suspicious but not definitive
+        if env.is_orphaned and env.name.lower() not in ["base", "root", "default"]:
             reasons.append("No associated projects found")
-            confidence += 0.3
-        
-        # Check for test/temporary environment patterns
-        temp_patterns = ["test", "tmp", "temp", "experiment", "trial", "demo"]
+            confidence += 0.2
+
+        # Temporary/test name patterns
+        temp_patterns = ["test", "tmp", "temp", "experiment", "trial", "demo", "scratch"]
         if any(pattern in env.name.lower() for pattern in temp_patterns):
-            reasons.append("Appears to be a temporary/test environment")
-            confidence += 0.4
-        
-        # Only suggest if we have reasonable confidence
-        if confidence > 0.4 and reasons:
+            reasons.append("Appears to be temporary/test")
+            confidence += 0.15
+
+        # Size signal adds urgency but not confidence
+        if env.size_bytes is not None:
+            size_mb = env.size_bytes / (1024 * 1024)
+            if size_mb >= 1024:
+                reasons.append("Large size (> 1GB)")
+                confidence += 0.1
+            elif size_mb >= 500:
+                reasons.append("Large size (> 500MB)")
+                confidence += 0.05
+
+        # Cap confidence to [0, 1]
+        confidence = min(confidence, 1.0)
+
+        # High risk if not unused and not broken
+        if env.health_status != HealthStatus.BROKEN and (env.days_since_used is None or env.days_since_used < 45):
+            risk_level = "high"
+
+        if confidence >= 0.4 and reasons:
             return CleanupSuggestion(
                 environment=env,
                 reason="; ".join(reasons),
-                confidence=min(confidence, 1.0),
+                confidence=confidence,
                 space_recovered=env.size_bytes or 0,
                 risk_level=risk_level
             )
-        
+
         return None
     
     def _calculate_package_similarity(self, packages1: List[str], packages2: List[str]) -> float:

@@ -21,8 +21,13 @@ class VenvRecord:
     python_version: Optional[str] = None
     created_at: Optional[str] = None
     last_used_at: Optional[str] = None
+    last_seen_at: Optional[str] = None
     size_mb: Optional[float] = None
+    size_mb_cached_at: Optional[str] = None
     package_count: Optional[int] = None
+    packages_cached_at: Optional[str] = None
+    activation_count: Optional[int] = None
+    missing: Optional[bool] = None
     is_active: bool = False
     notes: Optional[str] = None
 
@@ -62,8 +67,13 @@ class VenvRegistry:
                 python_version TEXT,
                 created_at TEXT,
                 last_used_at TEXT,
+                last_seen_at TEXT,
                 size_mb REAL,
+                size_mb_cached_at TEXT,
                 package_count INTEGER,
+                packages_cached_at TEXT,
+                activation_count INTEGER DEFAULT 0,
+                missing INTEGER DEFAULT 0,
                 is_active INTEGER DEFAULT 0,
                 notes TEXT,
                 registered_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -76,8 +86,27 @@ class VenvRegistry:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_project_path ON venvs(project_path)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_last_used ON venvs(last_used_at)")
 
+        self._ensure_columns(cursor)
+
         conn.commit()
         conn.close()
+
+    def _ensure_columns(self, cursor: sqlite3.Cursor):
+        """Ensure new columns exist for backwards compatibility"""
+        cursor.execute("PRAGMA table_info(venvs)")
+        existing = {row[1] for row in cursor.fetchall()}
+
+        columns = {
+            "last_seen_at": "TEXT",
+            "size_mb_cached_at": "TEXT",
+            "packages_cached_at": "TEXT",
+            "activation_count": "INTEGER DEFAULT 0",
+            "missing": "INTEGER DEFAULT 0",
+        }
+
+        for name, ddl in columns.items():
+            if name not in existing:
+                cursor.execute(f"ALTER TABLE venvs ADD COLUMN {name} {ddl}")
 
     def register(self, venv_path: Path, project_path: Optional[Path] = None,
                  name: Optional[str] = None) -> bool:
@@ -116,26 +145,36 @@ class VenvRegistry:
         cursor = conn.cursor()
 
         try:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             cursor.execute("""
                 INSERT INTO venvs
-                (name, path, project_path, python_version, created_at, last_used_at, size_mb, package_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (name, path, project_path, python_version, created_at, last_used_at, last_seen_at,
+                 size_mb, size_mb_cached_at, package_count, packages_cached_at, activation_count, missing)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(path) DO UPDATE SET
                     name = excluded.name,
                     project_path = excluded.project_path,
                     python_version = excluded.python_version,
                     last_used_at = excluded.last_used_at,
+                    last_seen_at = excluded.last_seen_at,
                     size_mb = excluded.size_mb,
-                    package_count = excluded.package_count
+                    size_mb_cached_at = excluded.size_mb_cached_at,
+                    package_count = excluded.package_count,
+                    packages_cached_at = excluded.packages_cached_at
             """, (
                 name,
                 str(venv_path),
                 str(project_path) if project_path else None,
                 python_version,
-                datetime.now().isoformat(),
-                datetime.now().isoformat(),
+                timestamp,
+                timestamp,
+                timestamp,
                 size_mb,
-                package_count
+                timestamp if size_mb is not None else None,
+                package_count,
+                timestamp if package_count is not None else None,
+                0,
+                0
             ))
             conn.commit()
             return True
@@ -157,16 +196,76 @@ class VenvRegistry:
         finally:
             conn.close()
 
-    def update_last_used(self, venv_path: Path):
-        """Update last used timestamp"""
+    def update_last_used(self, venv_path: Path, project_path: Optional[Path] = None):
+        """Update last used timestamp and activation count"""
         conn = sqlite3.connect(str(self.db_path))
         cursor = conn.cursor()
 
         try:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             cursor.execute("""
-                UPDATE venvs SET last_used_at = ? WHERE path = ?
-            """, (datetime.now().isoformat(), str(venv_path)))
+                UPDATE venvs SET last_used_at = ?,
+                                 last_seen_at = ?,
+                                 activation_count = COALESCE(activation_count, 0) + 1,
+                                 project_path = COALESCE(?, project_path),
+                                 missing = 0
+                WHERE path = ?
+            """, (timestamp, timestamp, str(project_path) if project_path else None, str(venv_path)))
             conn.commit()
+        finally:
+            conn.close()
+
+    def track_activation(self, venv_path: Path, project_path: Optional[Path] = None):
+        """Track an activation event for a venv"""
+        venv_path = Path(venv_path).resolve()
+        if not venv_path.exists():
+            return
+
+        if self.get(str(venv_path)) is None:
+            self.register(venv_path, project_path=project_path)
+            return
+
+        self.update_last_used(venv_path, project_path=project_path)
+
+    def mark_missing(self, venv_path: Path, is_missing: bool = True):
+        """Mark a venv as missing or present"""
+        conn = sqlite3.connect(str(self.db_path))
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                UPDATE venvs SET missing = ? WHERE path = ?
+            """, (1 if is_missing else 0, str(venv_path)))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def refresh_metadata(self, venv_path: Path) -> bool:
+        """Refresh size and package metadata for a venv"""
+        venv_path = Path(venv_path).resolve()
+        if not venv_path.exists():
+            self.mark_missing(venv_path, True)
+            return False
+
+        size_bytes = get_directory_size(venv_path)
+        size_mb = size_bytes / (1024 * 1024) if size_bytes else None
+        package_count = self._count_packages(venv_path)
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        conn = sqlite3.connect(str(self.db_path))
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                UPDATE venvs SET size_mb = ?,
+                                 size_mb_cached_at = ?,
+                                 package_count = ?,
+                                 packages_cached_at = ?,
+                                 missing = 0
+                WHERE path = ?
+            """, (size_mb, timestamp if size_mb is not None else None,
+                  package_count, timestamp if package_count is not None else None,
+                  str(venv_path)))
+            conn.commit()
+            return True
         finally:
             conn.close()
 
@@ -194,8 +293,13 @@ class VenvRegistry:
                     python_version=row['python_version'],
                     created_at=row['created_at'],
                     last_used_at=row['last_used_at'],
+                    last_seen_at=row['last_seen_at'],
                     size_mb=row['size_mb'],
+                    size_mb_cached_at=row['size_mb_cached_at'],
                     package_count=row['package_count'],
+                    packages_cached_at=row['packages_cached_at'],
+                    activation_count=row['activation_count'],
+                    missing=bool(row['missing']),
                     is_active=bool(row['is_active']),
                     notes=row['notes']
                 )
@@ -215,7 +319,16 @@ class VenvRegistry:
         cursor = conn.cursor()
 
         try:
-            cursor.execute(f"SELECT * FROM venvs ORDER BY {sort_by} DESC")
+            sort_map = {
+                "name": ("name", "ASC"),
+                "last_used_at": ("last_used_at", "DESC"),
+                "size_mb": ("size_mb", "DESC"),
+                "size": ("size_mb", "DESC"),
+                "created_at": ("created_at", "DESC"),
+                "project_path": ("project_path", "ASC"),
+            }
+            column, direction = sort_map.get(sort_by, sort_map["last_used_at"])
+            cursor.execute(f"SELECT * FROM venvs ORDER BY {column} {direction}")
             rows = cursor.fetchall()
 
             return [
@@ -226,8 +339,13 @@ class VenvRegistry:
                     python_version=row['python_version'],
                     created_at=row['created_at'],
                     last_used_at=row['last_used_at'],
+                    last_seen_at=row['last_seen_at'],
                     size_mb=row['size_mb'],
+                    size_mb_cached_at=row['size_mb_cached_at'],
                     package_count=row['package_count'],
+                    packages_cached_at=row['packages_cached_at'],
+                    activation_count=row['activation_count'],
+                    missing=bool(row['missing']),
                     is_active=bool(row['is_active']),
                     notes=row['notes']
                 )
@@ -254,8 +372,13 @@ class VenvRegistry:
                     python_version=row['python_version'],
                     created_at=row['created_at'],
                     last_used_at=row['last_used_at'],
+                    last_seen_at=row['last_seen_at'],
                     size_mb=row['size_mb'],
+                    size_mb_cached_at=row['size_mb_cached_at'],
                     package_count=row['package_count'],
+                    packages_cached_at=row['packages_cached_at'],
+                    activation_count=row['activation_count'],
+                    missing=bool(row['missing']),
                     is_active=bool(row['is_active']),
                     notes=row['notes']
                 )
@@ -292,26 +415,40 @@ class VenvRegistry:
             cursor.execute("SELECT COUNT(*) FROM venvs")
             total = cursor.fetchone()[0]
 
-            cursor.execute("SELECT SUM(size_mb) FROM venvs WHERE size_mb IS NOT NULL")
+            cursor.execute("SELECT COUNT(*) FROM venvs WHERE COALESCE(missing, 0) = 1")
+            missing_count = cursor.fetchone()[0]
+
+            cursor.execute("""
+                SELECT SUM(size_mb) FROM venvs
+                WHERE size_mb IS NOT NULL AND COALESCE(missing, 0) = 0
+            """)
             total_size = cursor.fetchone()[0] or 0
 
-            cursor.execute("SELECT SUM(package_count) FROM venvs WHERE package_count IS NOT NULL")
+            cursor.execute("""
+                SELECT SUM(package_count) FROM venvs
+                WHERE package_count IS NOT NULL AND COALESCE(missing, 0) = 0
+            """)
             total_packages = cursor.fetchone()[0] or 0
 
             cursor.execute("""
                 SELECT COUNT(*) FROM venvs
-                WHERE last_used_at < datetime('now', '-30 days')
+                WHERE COALESCE(missing, 0) = 0
+                  AND last_used_at IS NOT NULL
+                  AND datetime(replace(last_used_at, 'T', ' ')) < datetime('now', '-30 days')
             """)
             unused_30_days = cursor.fetchone()[0]
 
             cursor.execute("""
                 SELECT COUNT(*) FROM venvs
-                WHERE last_used_at < datetime('now', '-90 days')
+                WHERE COALESCE(missing, 0) = 0
+                  AND last_used_at IS NOT NULL
+                  AND datetime(replace(last_used_at, 'T', ' ')) < datetime('now', '-90 days')
             """)
             unused_90_days = cursor.fetchone()[0]
 
             return {
                 'total_venvs': total,
+                'missing_venvs': missing_count,
                 'total_size_mb': round(total_size, 2),
                 'total_packages': total_packages,
                 'unused_30_days': unused_30_days,

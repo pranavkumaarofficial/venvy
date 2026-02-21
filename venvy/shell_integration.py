@@ -81,15 +81,21 @@ function Venvy-Track-Activation {
     }
 }
 
-# Add to prompt
+# Add to prompt without clobbering the existing prompt
 $global:PromptHooks = @()
 $global:PromptHooks += { Venvy-Track-Activation }
+
+if (Test-Path function:\prompt) {
+    $global:__VenvyOriginalPrompt = (Get-Item function:\prompt).ScriptBlock
+} else {
+    $global:__VenvyOriginalPrompt = { "PS $($executionContext.SessionState.Path.CurrentLocation)> " }
+}
 
 function prompt {
     foreach ($hook in $global:PromptHooks) {
         & $hook
     }
-    # ... rest of your prompt
+    & $global:__VenvyOriginalPrompt
 }
 
 function Venvy-Activate {
@@ -117,6 +123,7 @@ def get_shell_config_path() -> Optional[Path]:
         home / ".bashrc",
         home / ".zshrc",
         home / ".config" / "fish" / "config.fish",
+        home / "Documents" / "WindowsPowerShell" / "Microsoft.PowerShell_profile.ps1",
         home / "Documents" / "PowerShell" / "Microsoft.PowerShell_profile.ps1",
     ]
 

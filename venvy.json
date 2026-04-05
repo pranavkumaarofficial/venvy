@@ -1,0 +1,25 @@
+{
+  "python_version": "3.8",
+  "packages": [
+    "click>=8.0.0",
+    "rich>=13.0.0",
+    "psutil>=5.9.0",
+    "packaging>=21.0"
+  ],
+  "dev_packages": [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "black>=22.0",
+    "isort>=5.10",
+    "mypy>=1.0"
+  ],
+  "scripts": {
+    "test": "pytest tests/ -v",
+    "lint": "black --check venvy/",
+    "typecheck": "mypy venvy/"
+  },
+  "constraints": {
+    "python_min": "3.8",
+    "python_max": "3.13"
+  }
+}

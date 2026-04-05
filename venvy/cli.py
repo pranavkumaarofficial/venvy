@@ -1,9 +1,11 @@
-﻿"""
+"""
 Command-line interface for venvy
-Provides beautiful, intuitive commands for managing Python virtual environments
+Agent-friendly Python virtual environment manager with structured JSON output,
+semantic exit codes, and non-interactive operation modes.
 """
 import sys
 import json
+import os
 from pathlib import Path
 from typing import List, Optional
 from datetime import datetime
@@ -22,36 +24,86 @@ from venvy.cleanup import EnvironmentCleanup
 from venvy.models import EnvironmentType, HealthStatus
 from venvy.utils import human_readable_size, get_platform_info
 from venvy.display import VenvyDisplay
+from venvy.exit_codes import ExitCode
 from venvy import __version__
 
 
 # Global console for rich output - disable emoji on Windows for compatibility
-import sys
 console = Console(emoji=not sys.platform.startswith('win'))
 display = VenvyDisplay(console)
+
+
+def _output_result(data: dict, exit_code: int = 0):
+    """Output structured JSON result for agent consumption.
+    Uses click.echo for clean output (no Rich color codes)."""
+    result = {"exit_code": exit_code, "success": exit_code == 0, **data}
+    click.echo(json.dumps(result, indent=2, default=str))
+    sys.exit(exit_code)
+
+
+def _is_json_mode(ctx) -> bool:
+    """Check if JSON output mode is active."""
+    return ctx.obj.get('json_output', False) if ctx.obj else False
+
+
+def _is_auto_yes(ctx) -> bool:
+    """Check if auto-yes mode is active (--yes or --json)."""
+    return ctx.obj.get('yes', False) if ctx.obj else False
+
+
+def _is_quiet(ctx) -> bool:
+    """Check if quiet mode is active."""
+    return ctx.obj.get('quiet', False) if ctx.obj else False
+
+
+def _auto_detect_env() -> Optional[Path]:
+    """Auto-detect virtual environment: VIRTUAL_ENV env var -> .venv -> venv in cwd."""
+    venv_env = os.environ.get('VIRTUAL_ENV')
+    if venv_env:
+        p = Path(venv_env)
+        if p.exists():
+            return p
+
+    cwd = Path.cwd()
+    for candidate in ['.venv', 'venv', 'env', '.env']:
+        test_path = cwd / candidate
+        if test_path.exists() and test_path.is_dir():
+            return test_path
+    return None
 
 
 @click.group()
 @click.version_option(version=__version__, prog_name="venvy")
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose output')
+@click.option('--json', 'json_output', is_flag=True, help='Output as JSON (implies --yes)')
+@click.option('--yes', '-y', is_flag=True, help='Skip all confirmation prompts')
+@click.option('--quiet', '-q', is_flag=True, help='Suppress non-essential output')
 @click.pass_context
-def main(ctx, verbose):
+def main(ctx, verbose, json_output, yes, quiet):
     """
-    venvy - Intelligent Python Virtual Environment Manager
-    
-    Discover, analyze, and manage Python virtual environments with intelligence and style.
+    venvy - Agent-Safe Python Virtual Environment Manager
+
+    Discover, analyze, create, and manage Python virtual environments.
+    Use --json for structured output that AI agents can parse.
     """
     ctx.ensure_object(dict)
     ctx.obj['verbose'] = verbose
-    
-    if verbose:
+    ctx.obj['json_output'] = json_output
+    ctx.obj['yes'] = yes or json_output  # --json implies --yes
+    ctx.obj['quiet'] = quiet or json_output  # --json implies --quiet
+
+    if verbose and not json_output:
         console.print(f"[dim]venvy v{__version__} on {get_platform_info()['system']}[/dim]")
 
 
+# ============================================================================
+# DISCOVERY & ANALYSIS COMMANDS (Slower - Filesystem Scanning)
+# ============================================================================
+
 @main.command()
-@click.option('--path', '-p', type=click.Path(exists=True, path_type=Path), 
+@click.option('--path', '-p', type=click.Path(exists=True, path_type=Path),
               help='Search path for environments')
-@click.option('--type', '-t', 'env_type', 
+@click.option('--type', '-t', 'env_type',
               type=click.Choice(['venv', 'conda', 'pyenv', 'virtualenv'], case_sensitive=False),
               help='Filter by environment type')
 @click.option('--format', '-f', 'output_format',
@@ -65,52 +117,57 @@ def main(ctx, verbose):
 @click.pass_context
 def list(ctx, path, env_type, output_format, sort_by, fast, thorough):
     """List all Python virtual environments"""
-    
+    json_mode = _is_json_mode(ctx)
+
     analysis = EnvironmentAnalysis()
-    
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console
-    ) as progress:
-        # Discovery phase
-        discover_task = progress.add_task("Discovering environments...", total=None)
-        
-        # Use appropriate scanning mode
-        use_fast_scan = fast and not thorough
-        
-        search_paths = [path] if path else None
+    discovery = EnvironmentDiscovery()
+
+    use_fast_scan = fast and not thorough
+    search_paths = [path] if path else None
+
+    if json_mode:
         environments = discovery.discover_all(search_paths, use_fast_scan=use_fast_scan)
-        
-        progress.update(discover_task, description="Discovery complete")
-        
-        # Analysis phase with parallel processing
         if environments:
-            analyze_task = progress.add_task("Analyzing environments...", total=len(environments))
-            
-            # Use parallel analysis for better performance
             environments = analysis.analyze_all_environments(environments, use_parallel=use_fast_scan)
-            progress.update(analyze_task, advance=len(environments))
-    
+    else:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            discover_task = progress.add_task("Discovering environments...", total=None)
+            environments = discovery.discover_all(search_paths, use_fast_scan=use_fast_scan)
+            progress.update(discover_task, description="Discovery complete")
+
+            if environments:
+                analyze_task = progress.add_task("Analyzing environments...", total=len(environments))
+                environments = analysis.analyze_all_environments(environments, use_parallel=use_fast_scan)
+                progress.update(analyze_task, advance=len(environments))
+
     # Filter by type if specified
     if env_type:
         env_type_enum = EnvironmentType(env_type.lower())
         environments = [env for env in environments if env.type == env_type_enum]
-    
+
     # Sort environments
     environments = _sort_environments(environments, sort_by)
-    
+
+    if json_mode or output_format == 'json':
+        data = [env.to_dict() for env in environments]
+        if json_mode:
+            _output_result({"environments": data, "count": len(data)})
+        else:
+            _output_json(environments)
+        return
+
     if not environments:
         console.print("No Python virtual environments found.")
         if path:
             console.print(f"   Searched in: {path}")
         console.print("   Try running without filters or check different locations.")
         return
-    
-    # Display results
-    if output_format == 'json':
-        _output_json(environments)
-    elif output_format == 'simple':
+
+    if output_format == 'simple':
         _output_simple(environments)
     else:
         display.show_environments_table(environments)
@@ -127,35 +184,43 @@ def list(ctx, path, env_type, output_format, sort_by, fast, thorough):
 @click.pass_context
 def size(ctx, path, top, output_format):
     """Show environment sizes and disk usage"""
-    
+    json_mode = _is_json_mode(ctx)
+
     analysis = EnvironmentAnalysis()
-    
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console
-    ) as progress:
-        task = progress.add_task("Analyzing environment sizes...", total=None)
-        
-        search_paths = [path] if path else None
+    discovery = EnvironmentDiscovery()
+
+    search_paths = [path] if path else None
+
+    if json_mode:
         environments = discovery.discover_all(search_paths)
         environments = analysis.analyze_all_environments(environments)
-        
-        progress.update(task, description="Analysis complete")
-    
+    else:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            task = progress.add_task("Analyzing environment sizes...", total=None)
+            environments = discovery.discover_all(search_paths)
+            environments = analysis.analyze_all_environments(environments)
+            progress.update(task, description="Analysis complete")
+
     if not environments:
+        if json_mode:
+            _output_result({"environments": [], "count": 0})
         console.print("No environments found to analyze.")
         return
-    
-    # Sort by size (largest first)
+
     environments = sorted(environments, key=lambda e: e.size_bytes or 0, reverse=True)
-    
-    # Limit to top N
     if top and len(environments) > top:
         environments = environments[:top]
-    
-    if output_format == 'json':
-        _output_json(environments)
+
+    if json_mode or output_format == 'json':
+        data = [env.to_dict() for env in environments]
+        if json_mode:
+            _output_result({"environments": data, "count": len(data)})
+        else:
+            _output_json(environments)
     else:
         display.show_size_analysis(environments)
 
@@ -163,37 +228,43 @@ def size(ctx, path, top, output_format):
 @main.command()
 @click.argument('environment', required=False)
 @click.option('--path', '-p', type=click.Path(exists=True, path_type=Path),
-              help='Search path for environments') 
+              help='Search path for environments')
 @click.pass_context
 def info(ctx, environment, path):
     """Show detailed information about an environment"""
-    
+    json_mode = _is_json_mode(ctx)
+
     if not environment:
+        if json_mode:
+            _output_result({"error": "No environment specified"}, ExitCode.ENV_NOT_FOUND)
         console.print("Please specify an environment name or path")
         console.print("   Example: venvy info myenv")
         return
-    
+
     discovery = EnvironmentDiscovery()
     analysis = EnvironmentAnalysis()
-    
-    # Try to find the environment
+
     env_info = discovery.find_environment(environment)
-    
+
     if not env_info:
-        console.print(f"âŒ Environment '{environment}' not found")
-        return
-    
-    # Analyze the environment
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console
-    ) as progress:
-        task = progress.add_task("ðŸ” Analyzing environment...", total=None)
+        if json_mode:
+            _output_result({"error": f"Environment '{environment}' not found"}, ExitCode.ENV_NOT_FOUND)
+        console.print(f"Environment '{environment}' not found")
+        sys.exit(ExitCode.ENV_NOT_FOUND)
+
+    if json_mode:
         analyzed_env = analysis.analyze_environment(env_info)
-        progress.update(task, description="âœ… Analysis complete")
-    
-    display.show_environment_details(analyzed_env)
+        _output_result({"environment": analyzed_env.to_dict()})
+    else:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            task = progress.add_task("Analyzing environment...", total=None)
+            analyzed_env = analysis.analyze_environment(env_info)
+            progress.update(task, description="Analysis complete")
+        display.show_environment_details(analyzed_env)
 
 
 @main.command()
@@ -202,28 +273,39 @@ def info(ctx, environment, path):
 @click.pass_context
 def health(ctx, path):
     """Check health status of all environments"""
-    
+    json_mode = _is_json_mode(ctx)
+
     discovery = EnvironmentDiscovery()
     analysis = EnvironmentAnalysis()
-    
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console
-    ) as progress:
-        task = progress.add_task("Checking environment health...", total=None)
-        
-        search_paths = [path] if path else None
+
+    search_paths = [path] if path else None
+
+    if json_mode:
         environments = discovery.discover_all(search_paths)
         environments = analysis.analyze_all_environments(environments)
-        
-        progress.update(task, description="âœ… Health check complete")
-    
+    else:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            task = progress.add_task("Checking environment health...", total=None)
+            environments = discovery.discover_all(search_paths)
+            environments = analysis.analyze_all_environments(environments)
+            progress.update(task, description="Health check complete")
+
     if not environments:
-        console.print("ðŸ¤” No environments found to check.")
+        if json_mode:
+            _output_result({"environments": [], "count": 0})
+        console.print("No environments found to check.")
         return
-    
-    display.show_health_report(environments)
+
+    if json_mode:
+        data = [{"name": e.name, "path": str(e.path), "health": e.health_status.value,
+                 "issues": e.health_issues or []} for e in environments]
+        _output_result({"environments": data, "count": len(data)})
+    else:
+        display.show_health_report(environments)
 
 
 @main.command()
@@ -236,30 +318,24 @@ def health(ctx, path):
               help='Minimum confidence threshold (0.0 - 1.0)')
 @click.pass_context
 def suggest(ctx, path, scan, max_suggestions, min_confidence):
-    """ðŸ’¡ Get intelligent cleanup suggestions"""
-    
+    """Get intelligent cleanup suggestions"""
+    json_mode = _is_json_mode(ctx)
+
     discovery = EnvironmentDiscovery()
     analysis = EnvironmentAnalysis()
-    
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console
-    ) as progress:
-        task = progress.add_task("ðŸ§  Generating suggestions...", total=None)
-        
-        suggestions = []
-        environments = []
 
+    suggestions = []
+    environments = []
+
+    if json_mode:
         if scan or path:
-            discovery = EnvironmentDiscovery()
             search_paths = [path] if path else None
             environments = discovery.discover_all(search_paths)
             environments = analysis.analyze_all_environments(environments)
             suggestions = analysis.generate_cleanup_suggestions(environments)
         else:
             from venvy.registry import VenvRegistry
-            from venvy.models import EnvironmentInfo, EnvironmentType, HealthStatus
+            from venvy.models import EnvironmentInfo
 
             registry = VenvRegistry()
             records = registry.list_all()
@@ -275,14 +351,10 @@ def suggest(ctx, path, scan, max_suggestions, min_confidence):
                         pass
 
                 env = EnvironmentInfo(
-                    name=record.name,
-                    path=Path(record.path),
-                    type=EnvironmentType.UNKNOWN,
-                    python_version=record.python_version,
-                    size_bytes=size_bytes,
-                    package_count=record.package_count,
-                    health_status=HealthStatus.UNKNOWN,
-                    activation_count=record.activation_count,
+                    name=record.name, path=Path(record.path),
+                    type=EnvironmentType.UNKNOWN, python_version=record.python_version,
+                    size_bytes=size_bytes, package_count=record.package_count,
+                    health_status=HealthStatus.UNKNOWN, activation_count=record.activation_count,
                     days_since_used=days_since_used,
                     linked_projects=[Path(record.project_path)] if record.project_path else None,
                     is_orphaned=record.project_path is None
@@ -290,9 +362,63 @@ def suggest(ctx, path, scan, max_suggestions, min_confidence):
                 environments.append(env)
 
             suggestions = analysis.generate_cleanup_suggestions(environments)
-        
-        progress.update(task, description="âœ… Analysis complete")
-    
+    else:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            task = progress.add_task("Generating suggestions...", total=None)
+
+            if scan or path:
+                search_paths = [path] if path else None
+                environments = discovery.discover_all(search_paths)
+                environments = analysis.analyze_all_environments(environments)
+                suggestions = analysis.generate_cleanup_suggestions(environments)
+            else:
+                from venvy.registry import VenvRegistry
+                from venvy.models import EnvironmentInfo
+
+                registry = VenvRegistry()
+                records = registry.list_all()
+
+                for record in records:
+                    size_bytes = int(record.size_mb * 1024 * 1024) if record.size_mb else None
+                    days_since_used = None
+                    if record.last_used_at:
+                        try:
+                            dt = datetime.fromisoformat(record.last_used_at.replace("T", " "))
+                            days_since_used = (datetime.now() - dt).days
+                        except Exception:
+                            pass
+
+                    env = EnvironmentInfo(
+                        name=record.name, path=Path(record.path),
+                        type=EnvironmentType.UNKNOWN, python_version=record.python_version,
+                        size_bytes=size_bytes, package_count=record.package_count,
+                        health_status=HealthStatus.UNKNOWN, activation_count=record.activation_count,
+                        days_since_used=days_since_used,
+                        linked_projects=[Path(record.project_path)] if record.project_path else None,
+                        is_orphaned=record.project_path is None
+                    )
+                    environments.append(env)
+
+                suggestions = analysis.generate_cleanup_suggestions(environments)
+
+            progress.update(task, description="Analysis complete")
+
+    # Filter by confidence
+    suggestions = [s for s in suggestions if s.confidence >= min_confidence]
+    if max_suggestions and len(suggestions) > max_suggestions:
+        suggestions = suggestions[:max_suggestions]
+
+    if json_mode:
+        data = [{"name": s.environment.name, "path": str(s.environment.path),
+                 "reason": s.reason, "confidence": s.confidence,
+                 "space_recovered": s.space_recovered, "risk_level": s.risk_level}
+                for s in suggestions]
+        _output_result({"suggestions": data, "count": len(data)})
+
     if not suggestions:
         if scan or path:
             console.print("No cleanup suggestions needed! Your environments look good.")
@@ -300,14 +426,7 @@ def suggest(ctx, path, scan, max_suggestions, min_confidence):
             console.print("[yellow]No suggestions from registry data.[/yellow]")
             console.print("[dim]Try 'venvy suggest --scan' or 'venvy suggest --path <dir>' for deeper analysis.[/dim]")
         return
-    
-    # Filter by confidence
-    suggestions = [s for s in suggestions if s.confidence >= min_confidence]
 
-    # Limit suggestions
-    if max_suggestions and len(suggestions) > max_suggestions:
-        suggestions = suggestions[:max_suggestions]
-    
     display.show_cleanup_suggestions(suggestions)
 
 
@@ -316,27 +435,38 @@ def suggest(ctx, path, scan, max_suggestions, min_confidence):
               help='Search path for environments')
 @click.pass_context
 def scan_stats(ctx, path):
-    """ðŸ“Š Show system-wide environment statistics"""
-    
+    """Show system-wide environment statistics"""
+    json_mode = _is_json_mode(ctx)
+
     discovery = EnvironmentDiscovery()
     analysis = EnvironmentAnalysis()
-    
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console
-    ) as progress:
-        task = progress.add_task("ðŸ“ˆ Gathering statistics...", total=None)
-        
-        search_paths = [path] if path else None
+
+    search_paths = [path] if path else None
+
+    if json_mode:
         environments = discovery.discover_all(search_paths)
         environments = analysis.analyze_all_environments(environments)
-        
         summary = analysis.get_system_summary(environments)
-        
-        progress.update(task, description="âœ… Statistics complete")
-    
-    display.show_system_summary(summary, environments)
+        _output_result({
+            "total_environments": summary.total_environments,
+            "total_size_bytes": summary.total_size_bytes,
+            "total_size_human": summary.total_size_human,
+            "environment_types": summary.environment_types,
+            "health_distribution": summary.health_distribution,
+            "potential_savings_bytes": summary.potential_savings_bytes,
+        })
+    else:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            task = progress.add_task("Gathering statistics...", total=None)
+            environments = discovery.discover_all(search_paths)
+            environments = analysis.analyze_all_environments(environments)
+            summary = analysis.get_system_summary(environments)
+            progress.update(task, description="Statistics complete")
+        display.show_system_summary(summary, environments)
 
 
 @main.command()
@@ -345,30 +475,38 @@ def scan_stats(ctx, path):
 @click.pass_context
 def duplicates(ctx, path):
     """Find environments with similar package lists"""
-    
+    json_mode = _is_json_mode(ctx)
+
     discovery = EnvironmentDiscovery()
     analysis = EnvironmentAnalysis()
-    
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console
-    ) as progress:
-        task = progress.add_task("ðŸ” Finding duplicate environments...", total=None)
-        
-        search_paths = [path] if path else None
+
+    search_paths = [path] if path else None
+
+    if json_mode:
         environments = discovery.discover_all(search_paths)
         environments = analysis.analyze_all_environments(environments)
-        
         duplicate_groups = analysis.find_duplicate_environments(environments)
-        
-        progress.update(task, description="âœ… Analysis complete")
-    
-    if not duplicate_groups:
-        console.print("âœ¨ No duplicate environments found!")
-        return
-    
-    display.show_duplicate_environments(duplicate_groups)
+        groups_data = []
+        for group in duplicate_groups:
+            groups_data.append([{"name": e.name, "path": str(e.path)} for e in group])
+        _output_result({"duplicate_groups": groups_data, "count": len(groups_data)})
+    else:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            task = progress.add_task("Finding duplicate environments...", total=None)
+            environments = discovery.discover_all(search_paths)
+            environments = analysis.analyze_all_environments(environments)
+            duplicate_groups = analysis.find_duplicate_environments(environments)
+            progress.update(task, description="Analysis complete")
+
+        if not duplicate_groups:
+            console.print("No duplicate environments found!")
+            return
+
+        display.show_duplicate_environments(duplicate_groups)
 
 
 @main.command()
@@ -376,41 +514,48 @@ def duplicates(ctx, path):
 @click.option('--force', '-f', is_flag=True, help='Skip confirmation prompt')
 @click.pass_context
 def remove(ctx, environment, force):
-    """ðŸ—‘ï¸ Remove a specific environment"""
-    
+    """Remove a specific environment"""
+    json_mode = _is_json_mode(ctx)
+    auto_yes = _is_auto_yes(ctx)
+
     discovery = EnvironmentDiscovery()
-    
-    # Find the environment
+
     env_info = discovery.find_environment(environment)
-    
+
     if not env_info:
-        console.print(f"âŒ Environment '{environment}' not found")
-        return
-    
-    # Show what will be removed
-    console.print(f"ðŸ“ Found environment: [bold]{env_info.name}[/bold]")
-    console.print(f"   Path: {env_info.path}")
-    if env_info.size_bytes:
-        console.print(f"   Size: {human_readable_size(env_info.size_bytes)}")
-    
+        if json_mode:
+            _output_result({"error": f"Environment '{environment}' not found"}, ExitCode.ENV_NOT_FOUND)
+        console.print(f"Environment '{environment}' not found")
+        sys.exit(ExitCode.ENV_NOT_FOUND)
+
+    if not json_mode:
+        console.print(f"Found environment: [bold]{env_info.name}[/bold]")
+        console.print(f"   Path: {env_info.path}")
+        if env_info.size_bytes:
+            console.print(f"   Size: {human_readable_size(env_info.size_bytes)}")
+
     # Confirm removal
-    if not force:
+    if not force and not auto_yes:
         if not Confirm.ask(f"Are you sure you want to remove '{env_info.name}'?"):
-            console.print("âŒ Removal cancelled")
+            console.print("Removal cancelled")
             return
-    
-    # Remove the environment using cleanup module
+
     cleanup = EnvironmentCleanup()
     success = cleanup.remove_environment(env_info, create_backup=True)
-    
+
     if success:
-        console.print(f"âœ… Successfully removed '{env_info.name}'")
-        if env_info.size_bytes:
-            console.print(f"   Freed {human_readable_size(env_info.size_bytes)} of disk space")
-        console.print("   ðŸ’¾ Backup created for safety")
+        if json_mode:
+            _output_result({"removed": env_info.name, "path": str(env_info.path),
+                            "size_freed": env_info.size_bytes or 0})
+        else:
+            console.print(f"Successfully removed '{env_info.name}'")
+            if env_info.size_bytes:
+                console.print(f"   Freed {human_readable_size(env_info.size_bytes)} of disk space")
     else:
-        console.print(f"âŒ Failed to remove environment")
-        sys.exit(1)
+        if json_mode:
+            _output_result({"error": "Failed to remove environment"}, ExitCode.PERMISSION_DENIED)
+        console.print("Failed to remove environment")
+        sys.exit(ExitCode.PERMISSION_DENIED)
 
 
 @main.command()
@@ -423,123 +568,150 @@ def remove(ctx, environment, force):
 @click.pass_context
 def clean(ctx, unused_days, dry_run, force, path):
     """Clean up unused environments"""
-    
+    json_mode = _is_json_mode(ctx)
+    auto_yes = _is_auto_yes(ctx)
+
     discovery = EnvironmentDiscovery()
     analysis = EnvironmentAnalysis()
-    
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console
-    ) as progress:
-        task = progress.add_task("ðŸ” Finding environments to clean...", total=None)
-        
-        search_paths = [path] if path else None
+
+    search_paths = [path] if path else None
+
+    if json_mode:
         environments = discovery.discover_all(search_paths)
         environments = analysis.analyze_all_environments(environments)
-        
-        # Find environments to clean
-        to_remove = []
-        for env in environments:
-            if (env.days_since_used is not None and 
-                env.days_since_used >= unused_days and
-                env.health_status != HealthStatus.HEALTHY):
-                to_remove.append(env)
-        
-        progress.update(task, description="âœ… Analysis complete")
-    
+    else:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            task = progress.add_task("Finding environments to clean...", total=None)
+            environments = discovery.discover_all(search_paths)
+            environments = analysis.analyze_all_environments(environments)
+            progress.update(task, description="Analysis complete")
+
+    to_remove = []
+    for env in environments:
+        if (env.days_since_used is not None and
+            env.days_since_used >= unused_days and
+            env.health_status != HealthStatus.HEALTHY):
+            to_remove.append(env)
+
     if not to_remove:
-        console.print(f"âœ¨ No environments found that are unused for {unused_days}+ days")
+        if json_mode:
+            _output_result({"removed": [], "count": 0, "space_freed": 0})
+        else:
+            console.print(f"No environments found that are unused for {unused_days}+ days")
         return
-    
-    # Show what will be removed
+
     total_size = sum(env.size_bytes or 0 for env in to_remove)
-    
-    console.print(f"\nðŸ§¹ Found {len(to_remove)} environment(s) to clean:")
-    for env in to_remove:
-        status_icon = "ðŸ’€" if env.health_status == HealthStatus.BROKEN else "âš ï¸"
-        console.print(f"   {status_icon} {env.name} ({human_readable_size(env.size_bytes or 0)}) - {env.days_since_used} days unused")
-    
-    console.print(f"\nðŸ’¾ Total space to recover: [bold]{human_readable_size(total_size)}[/bold]")
-    
+
     if dry_run:
-        console.print("\n[dim]ðŸ” Dry run complete - no environments were actually removed[/dim]")
+        if json_mode:
+            data = [{"name": e.name, "path": str(e.path), "size_bytes": e.size_bytes or 0,
+                     "days_unused": e.days_since_used} for e in to_remove]
+            _output_result({"dry_run": True, "would_remove": data, "count": len(data),
+                            "space_would_free": total_size})
+        else:
+            console.print(f"\nFound {len(to_remove)} environment(s) to clean:")
+            for env in to_remove:
+                console.print(f"   {env.name} ({human_readable_size(env.size_bytes or 0)}) - {env.days_since_used} days unused")
+            console.print(f"\nTotal space to recover: [bold]{human_readable_size(total_size)}[/bold]")
+            console.print("\n[dim]Dry run complete - no environments were actually removed[/dim]")
         return
-    
-    # Confirm removal
-    if not force:
+
+    if not json_mode:
+        console.print(f"\nFound {len(to_remove)} environment(s) to clean:")
+        for env in to_remove:
+            console.print(f"   {env.name} ({human_readable_size(env.size_bytes or 0)}) - {env.days_since_used} days unused")
+        console.print(f"\nTotal space to recover: [bold]{human_readable_size(total_size)}[/bold]")
+
+    if not force and not auto_yes:
         if not Confirm.ask(f"Remove {len(to_remove)} environment(s)?"):
-            console.print("âŒ Cleanup cancelled")
+            console.print("Cleanup cancelled")
             return
-    
-    # Remove environments using cleanup module
+
     cleanup = EnvironmentCleanup()
     results = cleanup.batch_remove_environments(to_remove, create_backups=True)
-    
+
     removed_count = len(results['success'])
     failed_count = len(results['failed'])
     removed_size = sum(env.size_bytes or 0 for env in results['success'])
-    
-    # Show individual results
-    for env in results['success']:
-        console.print(f"âœ… Removed {env.name}")
-    
-    for env in results['failed']:
-        console.print(f"âŒ Failed to remove {env.name}")
-    
-    console.print(f"\nðŸŽ‰ Cleanup complete!")
-    console.print(f"   Removed: {removed_count} environment(s)")
-    if failed_count > 0:
-        console.print(f"   Failed: {failed_count} environment(s)")
-    console.print(f"   Space freed: {human_readable_size(removed_size)}")
-    if removed_count > 0:
-        console.print("   ðŸ’¾ Backups created for safety")
+
+    if json_mode:
+        _output_result({
+            "removed": [{"name": e.name, "path": str(e.path)} for e in results['success']],
+            "failed": [{"name": e.name, "path": str(e.path)} for e in results['failed']],
+            "count": removed_count,
+            "space_freed": removed_size,
+        })
+    else:
+        for env in results['success']:
+            console.print(f"Removed {env.name}")
+        for env in results['failed']:
+            console.print(f"[red]Failed to remove {env.name}[/red]")
+        console.print(f"\nCleanup complete! Removed: {removed_count}, Space freed: {human_readable_size(removed_size)}")
 
 
 @main.command()
 @click.option('--clear', is_flag=True, help='Clear all cached data')
-@click.option('--stats', is_flag=True, help='Show cache statistics')
+@click.option('--stats', 'show_stats', is_flag=True, help='Show cache statistics')
 @click.pass_context
-def cache(ctx, clear, stats):
+def cache(ctx, clear, show_stats):
     """Manage venvy cache for better performance"""
+    json_mode = _is_json_mode(ctx)
     from venvy.performance import EnvironmentCache
-    
+
     cache_manager = EnvironmentCache()
-    
+
     if clear:
         cache_manager.clear_cache()
-        console.print("Cache cleared successfully")
+        if json_mode:
+            _output_result({"action": "cleared"})
+        else:
+            console.print("Cache cleared successfully")
         return
-    
-    if stats:
+
+    if show_stats:
         cache_dir = cache_manager.cache_dir
         if cache_dir.exists():
             cache_files = list(cache_dir.glob("*.json"))
             total_size = sum(f.stat().st_size for f in cache_files if f.exists())
-            
-            console.print(f"Cache directory: {cache_dir}")
-            console.print(f"Cache files: {len(cache_files)}")
-            console.print(f"Total size: {human_readable_size(total_size)}")
-            
-            # Check cache freshness
-            env_cache = cache_manager.cache_file
-            if env_cache.exists():
-                import json
-                try:
-                    with open(env_cache) as f:
-                        data = json.load(f)
-                    cached_at = data.get('cached_at', '')
-                    env_count = len(data.get('environments', []))
-                    console.print(f"Environment cache: {env_count} environments")
-                    console.print(f"Last updated: {cached_at}")
-                except Exception:
-                    console.print("Environment cache: corrupted")
+
+            if json_mode:
+                _output_result({
+                    "cache_dir": str(cache_dir),
+                    "file_count": len(cache_files),
+                    "total_size_bytes": total_size,
+                })
+            else:
+                console.print(f"Cache directory: {cache_dir}")
+                console.print(f"Cache files: {len(cache_files)}")
+                console.print(f"Total size: {human_readable_size(total_size)}")
+
+                env_cache = cache_manager.cache_file
+                if env_cache.exists():
+                    try:
+                        with open(env_cache) as f:
+                            data = json.load(f)
+                        cached_at = data.get('cached_at', '')
+                        env_count = len(data.get('environments', []))
+                        console.print(f"Environment cache: {env_count} environments")
+                        console.print(f"Last updated: {cached_at}")
+                    except Exception:
+                        console.print("Environment cache: corrupted")
         else:
-            console.print("No cache data found")
+            if json_mode:
+                _output_result({"cache_dir": str(cache_dir), "file_count": 0, "total_size_bytes": 0})
+            else:
+                console.print("No cache data found")
         return
-    
-    console.print("Venvy uses intelligent caching to improve performance")
-    console.print("Use --clear to clear cache or --stats to show cache information")
+
+    if json_mode:
+        _output_result({"hint": "Use --clear or --stats"})
+    else:
+        console.print("Venvy uses intelligent caching to improve performance")
+        console.print("Use --clear to clear cache or --stats to show cache information")
 
 
 def _sort_environments(environments: List, sort_by: str):
@@ -575,7 +747,8 @@ def _output_simple(environments: List):
 @click.option('--project', '-p', type=click.Path(exists=True, path_type=Path),
               help='Project directory using this venv')
 @click.option('--name', '-n', help='Custom name for this venv')
-def register(venv_path, project, name):
+@click.pass_context
+def register(ctx, venv_path, project, name):
     """Register a virtual environment for tracking
 
     Once registered, venvs appear in venvy ls without slow scanning.
@@ -585,6 +758,7 @@ def register(venv_path, project, name):
         venvy register /path/to/venv --project /path/to/project
         venvy register .venv --name myproject
     """
+    json_mode = _is_json_mode(ctx)
     from venvy.registry import VenvRegistry
 
     # Default to current directory's .venv or venv
@@ -597,44 +771,56 @@ def register(venv_path, project, name):
                 break
 
         if venv_path is None:
+            if json_mode:
+                _output_result({"error": "No venv found in current directory"}, ExitCode.ENV_NOT_FOUND)
             console.print("[red]Error: No venv found in current directory[/red]")
             console.print("Usage: venvy register <path-to-venv>")
-            return
+            sys.exit(ExitCode.ENV_NOT_FOUND)
 
-    # Default project to parent of venv
     if project is None:
         project = venv_path.parent
 
     registry = VenvRegistry()
 
-    console.print(f"Registering venv: {venv_path}")
+    if not json_mode:
+        console.print(f"Registering venv: {venv_path}")
 
     if registry.register(venv_path, project, name):
-        console.print("[green]Venv registered successfully![/green]")
-        console.print(f"  Path: {venv_path}")
-        console.print(f"  Project: {project}")
-        console.print(f"\nNow it will appear in 'venvy ls' instantly (no scanning needed)")
+        if json_mode:
+            _output_result({"registered": True, "path": str(venv_path), "project": str(project)})
+        else:
+            console.print("[green]Venv registered successfully![/green]")
+            console.print(f"  Path: {venv_path}")
+            console.print(f"  Project: {project}")
+            console.print(f"\nNow it will appear in 'venvy ls' instantly (no scanning needed)")
     else:
+        if json_mode:
+            _output_result({"error": "Failed to register venv"}, ExitCode.GENERAL_ERROR)
         console.print("[red]Failed to register venv[/red]")
+        sys.exit(ExitCode.GENERAL_ERROR)
 
 
 @main.command()
 @click.argument('name_or_path', required=False)
-def track(name_or_path):
+@click.pass_context
+def track(ctx, name_or_path):
     """Update last-used timestamp for a venv (called automatically on activation)"""
     from venvy.registry import VenvRegistry
-    import os
 
-    # If no argument, try to use VIRTUAL_ENV environment variable
     if name_or_path is None:
         name_or_path = os.environ.get('VIRTUAL_ENV')
 
     if not name_or_path:
+        if _is_json_mode(ctx):
+            _output_result({"error": "No venv specified or active"}, ExitCode.ENV_NOT_FOUND)
         console.print("[yellow]No venv specified or active[/yellow]")
         return
 
     registry = VenvRegistry()
     registry.track_activation(Path(name_or_path), project_path=Path.cwd())
+
+    if _is_json_mode(ctx):
+        _output_result({"tracked": name_or_path})
 
 
 @main.command('ls')
@@ -643,7 +829,8 @@ def track(name_or_path):
 @click.option('--format', '-f', type=click.Choice(['table', 'json', 'simple']),
               default='table', help='Output format')
 @click.option('--hide-missing', is_flag=True, help='Hide entries whose paths are missing')
-def ls_command(sort, format, hide_missing):
+@click.pass_context
+def ls_command(ctx, sort, format, hide_missing):
     """List all registered venvs (INSTANT - no scanning!)
 
     This is FAST because it reads from the registry database
@@ -651,6 +838,7 @@ def ls_command(sort, format, hide_missing):
 
     First time? Run 'venvy scan' to find and register your existing venvs.
     """
+    json_mode = _is_json_mode(ctx)
     from venvy.registry import VenvRegistry
 
     registry = VenvRegistry()
@@ -677,6 +865,15 @@ def ls_command(sort, format, hide_missing):
 
     venvs = filtered
 
+    if json_mode or format == 'json':
+        data = [v.to_dict() for v in venvs]
+        if json_mode:
+            stats_data = registry.get_stats()
+            _output_result({"venvs": data, "count": len(data), "stats": stats_data})
+        else:
+            console.print_json(json.dumps(data, indent=2))
+        return
+
     if not venvs:
         console.print("[yellow]No registered venvs found[/yellow]")
         console.print("\nTo register venvs:")
@@ -685,10 +882,7 @@ def ls_command(sort, format, hide_missing):
         console.print("  3. Or auto-track: 'venvy shell-hook' to install shell integration")
         return
 
-    if format == 'json':
-        data = [v.to_dict() for v in venvs]
-        console.print_json(json.dumps(data, indent=2))
-    elif format == 'simple':
+    if format == 'simple':
         for v in venvs:
             suffix = " [missing]" if v.missing else ""
             console.print(f"{v.name} -> {v.path}{suffix}")
@@ -704,7 +898,6 @@ def ls_command(sort, format, hide_missing):
         table.add_column("Project", style="blue", no_wrap=False)
 
         for v in venvs:
-            # Parse last used date
             last_used = "never"
             if v.last_used_at:
                 try:
@@ -720,7 +913,7 @@ def ls_command(sort, format, hide_missing):
                         last_used = f"{delta.days//7}w ago"
                     else:
                         last_used = f"{delta.days//30}mo ago"
-                except:
+                except Exception:
                     pass
 
             table.add_row(
@@ -735,13 +928,12 @@ def ls_command(sort, format, hide_missing):
 
         console.print(table)
 
-        # Show stats
-        stats = registry.get_stats()
-        console.print(f"\n[dim]Total: {stats['total_venvs']} venvs, {stats['total_size_mb']:.1f}MB, {stats['total_packages']} packages[/dim]")
-        if stats.get('missing_venvs', 0) > 0:
-            console.print(f"[yellow]{stats['missing_venvs']} venvs missing on disk (run 'venvy cleanup-registry')[/yellow]")
-        if stats['unused_90_days'] > 0:
-            console.print(f"[yellow]{stats['unused_90_days']} venvs unused for 90+ days[/yellow]")
+        stats_data = registry.get_stats()
+        console.print(f"\n[dim]Total: {stats_data['total_venvs']} venvs, {stats_data['total_size_mb']:.1f}MB, {stats_data['total_packages']} packages[/dim]")
+        if stats_data.get('missing_venvs', 0) > 0:
+            console.print(f"[yellow]{stats_data['missing_venvs']} venvs missing on disk (run 'venvy cleanup-registry')[/yellow]")
+        if stats_data['unused_90_days'] > 0:
+            console.print(f"[yellow]{stats_data['unused_90_days']} venvs unused for 90+ days[/yellow]")
 
 
 @main.command()
@@ -749,7 +941,8 @@ def ls_command(sort, format, hide_missing):
 @click.option('--path', '-p', type=click.Path(exists=True, path_type=Path),
               help='Specific path to scan')
 @click.option('--depth', '-d', type=int, default=3, help='Max depth to scan')
-def scan(home, path, depth):
+@click.pass_context
+def scan(ctx, home, path, depth):
     """Scan filesystem for venvs and register them
 
     This is the SLOW operation - only run when needed.
@@ -760,11 +953,11 @@ def scan(home, path, depth):
         venvy scan --home           # Scan home directory (slow!)
         venvy scan --path ~/projects
     """
+    json_mode = _is_json_mode(ctx)
     from venvy.registry import VenvRegistry
 
     registry = VenvRegistry()
 
-    # Determine search paths
     if path:
         search_paths = [path]
     elif home:
@@ -772,58 +965,77 @@ def scan(home, path, depth):
     else:
         search_paths = [Path.cwd()]
 
-    console.print(f"Scanning {search_paths[0]} (depth={depth})...")
-    console.print("[yellow]This may take a while...[/yellow]")
+    if not json_mode:
+        console.print(f"Scanning {search_paths[0]} (depth={depth})...")
+        console.print("[yellow]This may take a while...[/yellow]")
 
-    with Progress(console=console) as progress:
-        task = progress.add_task("Scanning...", total=None)
+    if json_mode:
         registered = registry.scan_and_register_all(search_paths, max_depth=depth)
-        progress.update(task, completed=1)
-
-    console.print(f"\n[green]Found and registered {registered} venv(s)[/green]")
-    console.print("\nNow run 'venvy ls' to see them instantly!")
+        _output_result({"registered": registered, "search_path": str(search_paths[0])})
+    else:
+        with Progress(console=console) as progress:
+            task = progress.add_task("Scanning...", total=None)
+            registered = registry.scan_and_register_all(search_paths, max_depth=depth)
+            progress.update(task, completed=1)
+        console.print(f"\n[green]Found and registered {registered} venv(s)[/green]")
+        console.print("\nNow run 'venvy ls' to see them instantly!")
 
 
 @main.command()
-def current():
+@click.pass_context
+def current(ctx):
     """Show currently active venv"""
-    import os
+    json_mode = _is_json_mode(ctx)
 
     venv = os.environ.get('VIRTUAL_ENV')
 
     if venv:
-        console.print(f"[green]Active venv:[/green] {venv}")
-
         from venvy.registry import VenvRegistry
         registry = VenvRegistry()
         record = registry.get(venv)
 
-        if record:
-            console.print(f"  Name: {record.name}")
-            console.print(f"  Python: {record.python_version}")
-            console.print(f"  Project: {record.project_path}")
+        if json_mode:
+            data = {"active": True, "path": venv}
+            if record:
+                data.update({"name": record.name, "python_version": record.python_version,
+                             "project": record.project_path, "registered": True})
+            else:
+                data["registered"] = False
+            _output_result(data)
         else:
-            console.print("[dim]  (not registered - run 'venvy register' to track it)[/dim]")
+            console.print(f"[green]Active venv:[/green] {venv}")
+            if record:
+                console.print(f"  Name: {record.name}")
+                console.print(f"  Python: {record.python_version}")
+                console.print(f"  Project: {record.project_path}")
+            else:
+                console.print("[dim]  (not registered - run 'venvy register' to track it)[/dim]")
     else:
-        console.print("[yellow]No venv currently active[/yellow]")
-        console.print("\nTo activate a venv:")
-        console.print("  source /path/to/venv/bin/activate")
+        if json_mode:
+            _output_result({"active": False}, ExitCode.ENV_NOT_FOUND)
+        else:
+            console.print("[yellow]No venv currently active[/yellow]")
+            console.print("\nTo activate a venv:")
+            console.print("  source /path/to/venv/bin/activate")
 
 
 @main.command()
 @click.option('--days', '-d', type=int, default=90, help='Consider unused after N days')
 @click.option('--dry-run', is_flag=True, help='Show what would be cleaned')
-def cleanup(days, dry_run):
+@click.option('--force', '-f', is_flag=True, help='Skip confirmation prompt')
+@click.pass_context
+def cleanup(ctx, days, dry_run, force):
     """Remove venvs not used in N days
 
     Default: removes venvs unused for 90+ days
     """
+    json_mode = _is_json_mode(ctx)
+    auto_yes = _is_auto_yes(ctx)
     from venvy.registry import VenvRegistry
 
     registry = VenvRegistry()
     venvs = registry.list_all()
 
-    # Find old venvs
     to_remove = []
     for v in venvs:
         if v.last_used_at:
@@ -832,44 +1044,65 @@ def cleanup(days, dry_run):
                 age_days = (datetime.now() - dt).days
                 if age_days >= days:
                     to_remove.append((v, age_days))
-            except:
+            except Exception:
                 pass
 
     if not to_remove:
-        console.print(f"[green]No venvs unused for {days}+ days[/green]")
+        if json_mode:
+            _output_result({"removed": [], "count": 0, "space_freed_mb": 0})
+        else:
+            console.print(f"[green]No venvs unused for {days}+ days[/green]")
         return
 
-    console.print(f"[yellow]Found {len(to_remove)} venv(s) unused for {days}+ days:[/yellow]\n")
-
-    total_size = 0
-    for v, age in to_remove:
-        console.print(f"  {v.name} - last used {age} days ago ({v.size_mb:.1f}MB)")
-        if v.size_mb:
-            total_size += v.size_mb
-
-    console.print(f"\n[bold]Total space: {total_size:.1f}MB[/bold]")
+    total_size = sum(v.size_mb or 0 for v, _ in to_remove)
 
     if dry_run:
-        console.print("\n[dim]Dry run - no venvs removed[/dim]")
+        if json_mode:
+            data = [{"name": v.name, "path": v.path, "age_days": age, "size_mb": v.size_mb or 0}
+                    for v, age in to_remove]
+            _output_result({"dry_run": True, "would_remove": data, "count": len(data),
+                            "space_would_free_mb": total_size})
+        else:
+            console.print(f"[yellow]Found {len(to_remove)} venv(s) unused for {days}+ days:[/yellow]\n")
+            for v, age in to_remove:
+                console.print(f"  {v.name} - last used {age} days ago ({v.size_mb:.1f}MB)" if v.size_mb else f"  {v.name} - last used {age} days ago")
+            console.print(f"\n[bold]Total space: {total_size:.1f}MB[/bold]")
+            console.print("\n[dim]Dry run - no venvs removed[/dim]")
         return
 
-    if not Confirm.ask(f"\nRemove {len(to_remove)} venv(s)?"):
-        console.print("Cancelled")
-        return
+    if not json_mode:
+        console.print(f"[yellow]Found {len(to_remove)} venv(s) unused for {days}+ days:[/yellow]\n")
+        for v, age in to_remove:
+            console.print(f"  {v.name} - last used {age} days ago ({v.size_mb:.1f}MB)" if v.size_mb else f"  {v.name} - last used {age} days ago")
+        console.print(f"\n[bold]Total space: {total_size:.1f}MB[/bold]")
 
-    # Remove venvs
+    if not force and not auto_yes:
+        if not Confirm.ask(f"\nRemove {len(to_remove)} venv(s)?"):
+            console.print("Cancelled")
+            return
+
+    import shutil
     removed = 0
+    removed_list = []
+    failed_list = []
     for v, _ in to_remove:
         try:
-            import shutil
             shutil.rmtree(v.path)
             registry.unregister(Path(v.path))
-            console.print(f"  [green]+[/green] Removed {v.name}")
             removed += 1
+            removed_list.append({"name": v.name, "path": v.path})
+            if not json_mode:
+                console.print(f"  [green]+[/green] Removed {v.name}")
         except Exception as e:
-            console.print(f"  [red]x[/red] Failed to remove {v.name}: {e}")
+            failed_list.append({"name": v.name, "error": str(e)})
+            if not json_mode:
+                console.print(f"  [red]x[/red] Failed to remove {v.name}: {e}")
 
-    console.print(f"\n[green]Removed {removed}/{len(to_remove)} venvs ({total_size:.1f}MB freed)[/green]")
+    if json_mode:
+        _output_result({"removed": removed_list, "failed": failed_list,
+                        "count": removed, "space_freed_mb": total_size})
+    else:
+        console.print(f"\n[green]Removed {removed}/{len(to_remove)} venvs ({total_size:.1f}MB freed)[/green]")
 
 
 @main.command()
@@ -880,8 +1113,10 @@ def cleanup(days, dry_run):
 @click.option('--max', 'max_count', type=int, default=0, help='Limit number of venvs to refresh')
 @click.option('--stale-days', type=int, default=7, help='Refresh only if cache is older than N days')
 @click.option('--force', is_flag=True, help='Refresh even if cache is recent')
-def refresh(refresh_all, path, name, max_count, stale_days, force):
+@click.pass_context
+def refresh(ctx, refresh_all, path, name, max_count, stale_days, force):
     """Refresh cached size/package metadata for registered venvs"""
+    json_mode = _is_json_mode(ctx)
     from venvy.registry import VenvRegistry
 
     registry = VenvRegistry()
@@ -894,25 +1129,30 @@ def refresh(refresh_all, path, name, max_count, stale_days, force):
     elif refresh_all:
         targets = registry.list_all()
     else:
+        if json_mode:
+            _output_result({"error": "Specify --all, --path, or --name"}, ExitCode.GENERAL_ERROR)
         console.print("[yellow]Specify --all, --path, or --name[/yellow]")
         return
 
     targets = [t for t in targets if t is not None]
     if not targets:
-        console.print("[yellow]No matching venvs found[/yellow]")
+        if json_mode:
+            _output_result({"refreshed": 0, "skipped": 0, "missing": 0})
+        else:
+            console.print("[yellow]No matching venvs found[/yellow]")
         return
 
     if max_count and len(targets) > max_count:
         targets = targets[:max_count]
 
-    def _is_stale(ts: Optional[str], days: int) -> bool:
+    def _is_stale(ts: Optional[str], days_threshold: int) -> bool:
         if not ts:
             return True
         try:
             cached_at = datetime.fromisoformat(ts)
         except ValueError:
             return True
-        return (datetime.now() - cached_at).days >= days
+        return (datetime.now() - cached_at).days >= days_threshold
 
     refreshed = 0
     skipped = 0
@@ -932,20 +1172,24 @@ def refresh(refresh_all, path, name, max_count, stale_days, force):
         else:
             missing += 1
 
-    console.print(f"[green]Refreshed: {refreshed}[/green]")
-    if skipped:
-        console.print(f"[dim]Skipped (fresh): {skipped}[/dim]")
-    if missing:
-        console.print(f"[yellow]Missing on disk: {missing}[/yellow]")
+    if json_mode:
+        _output_result({"refreshed": refreshed, "skipped": skipped, "missing": missing})
+    else:
+        console.print(f"[green]Refreshed: {refreshed}[/green]")
+        if skipped:
+            console.print(f"[dim]Skipped (fresh): {skipped}[/dim]")
+        if missing:
+            console.print(f"[yellow]Missing on disk: {missing}[/yellow]")
 
 
 @main.command()
-def doctor():
+@click.pass_context
+def doctor(ctx):
     """Diagnose common setup and registry issues"""
+    json_mode = _is_json_mode(ctx)
     from venvy.registry import VenvRegistry
-    import os
 
-    console.print(Panel.fit("[bold cyan]Venvy Doctor[/bold cyan]"))
+    checks = []
 
     registry = VenvRegistry()
 
@@ -953,30 +1197,45 @@ def doctor():
     try:
         db_path = registry.db_path
         if db_path.exists():
-            console.print(f"[green]OK[/green] Registry DB: {db_path}")
+            checks.append({"check": "registry_db", "status": "ok", "detail": str(db_path)})
+            if not json_mode:
+                console.print(f"[green]OK[/green] Registry DB: {db_path}")
         else:
-            console.print(f"[red]MISSING[/red] Registry DB not found at {db_path}")
+            checks.append({"check": "registry_db", "status": "missing", "detail": str(db_path)})
+            if not json_mode:
+                console.print(f"[red]MISSING[/red] Registry DB not found at {db_path}")
     except Exception as e:
-        console.print(f"[red]ERROR[/red] Registry DB check failed: {e}")
+        checks.append({"check": "registry_db", "status": "error", "detail": str(e)})
+        if not json_mode:
+            console.print(f"[red]ERROR[/red] Registry DB check failed: {e}")
 
     # Stats / missing entries
     try:
-        stats = registry.get_stats()
-        console.print(f"[green]OK[/green] Registry entries: {stats['total_venvs']}")
-        if stats.get('missing_venvs', 0) > 0:
-            console.print(f"[yellow]WARN[/yellow] Missing on disk: {stats['missing_venvs']} (run 'venvy cleanup-registry')")
-        else:
-            console.print("[green]OK[/green] No missing entries detected")
-    except Exception as e:
-        console.print(f"[red]ERROR[/red] Registry stats failed: {e}")
+        stats_data = registry.get_stats()
+        checks.append({"check": "registry_entries", "status": "ok", "detail": stats_data['total_venvs']})
+        if not json_mode:
+            console.print(f"[green]OK[/green] Registry entries: {stats_data['total_venvs']}")
 
-    # Shell hook presence (best-effort)
+        if stats_data.get('missing_venvs', 0) > 0:
+            checks.append({"check": "missing_venvs", "status": "warn",
+                           "detail": stats_data['missing_venvs']})
+            if not json_mode:
+                console.print(f"[yellow]WARN[/yellow] Missing on disk: {stats_data['missing_venvs']} (run 'venvy cleanup-registry')")
+        else:
+            checks.append({"check": "missing_venvs", "status": "ok", "detail": 0})
+            if not json_mode:
+                console.print("[green]OK[/green] No missing entries detected")
+    except Exception as e:
+        checks.append({"check": "registry_entries", "status": "error", "detail": str(e)})
+        if not json_mode:
+            console.print(f"[red]ERROR[/red] Registry stats failed: {e}")
+
+    # Shell hook presence
     try:
         from venvy.shell_integration import get_shell_config_path
         config_path = get_shell_config_path()
 
         if not config_path:
-            # PowerShell profiles (common locations)
             home = Path.home()
             candidates = [
                 home / "Documents" / "PowerShell" / "Microsoft.PowerShell_profile.ps1",
@@ -991,29 +1250,72 @@ def doctor():
             try:
                 content = config_path.read_text(encoding="utf-8", errors="ignore")
                 if "venvy shell-hook" in content or "venvy_track_activation" in content or "Venvy-Track-Activation" in content:
-                    console.print(f"[green]OK[/green] Shell hook detected in {config_path}")
+                    checks.append({"check": "shell_hook", "status": "ok", "detail": str(config_path)})
+                    if not json_mode:
+                        console.print(f"[green]OK[/green] Shell hook detected in {config_path}")
                 else:
-                    console.print(f"[yellow]WARN[/yellow] Shell hook not detected in {config_path}")
-                    console.print("[dim]Install with: venvy shell-hook >> $PROFILE[/dim]")
+                    checks.append({"check": "shell_hook", "status": "warn", "detail": "Not detected"})
+                    if not json_mode:
+                        console.print(f"[yellow]WARN[/yellow] Shell hook not detected in {config_path}")
+                        console.print("[dim]Install with: venvy shell-hook >> $PROFILE[/dim]")
             except Exception:
-                console.print(f"[yellow]WARN[/yellow] Could not read shell config: {config_path}")
+                checks.append({"check": "shell_hook", "status": "warn", "detail": "Could not read config"})
+                if not json_mode:
+                    console.print(f"[yellow]WARN[/yellow] Could not read shell config: {config_path}")
         else:
             shell = os.environ.get("SHELL") or "unknown"
-            console.print(f"[yellow]WARN[/yellow] Shell config not found (SHELL={shell})")
-            console.print("[dim]PowerShell users can run: venvy shell-hook --shell powershell >> $PROFILE[/dim]")
+            checks.append({"check": "shell_hook", "status": "warn", "detail": f"Config not found (SHELL={shell})"})
+            if not json_mode:
+                console.print(f"[yellow]WARN[/yellow] Shell config not found (SHELL={shell})")
+                console.print("[dim]PowerShell users can run: venvy shell-hook --shell powershell >> $PROFILE[/dim]")
     except Exception as e:
-        console.print(f"[yellow]WARN[/yellow] Shell hook check failed: {e}")
+        checks.append({"check": "shell_hook", "status": "warn", "detail": str(e)})
+        if not json_mode:
+            console.print(f"[yellow]WARN[/yellow] Shell hook check failed: {e}")
+
+    # Gemma availability check
+    try:
+        from venvy.gemma import is_gemma_available, GemmaAnalyzer
+        if is_gemma_available():
+            analyzer = GemmaAnalyzer()
+            if analyzer.is_model_downloaded():
+                checks.append({"check": "gemma_ai", "status": "ok", "detail": "Model available"})
+                if not json_mode:
+                    console.print("[green]OK[/green] Gemma AI model available")
+            else:
+                checks.append({"check": "gemma_ai", "status": "warn", "detail": "Model not downloaded"})
+                if not json_mode:
+                    console.print("[yellow]WARN[/yellow] Gemma AI: llama-cpp-python installed but model not downloaded")
+                    console.print("[dim]Run: venvy analyze-error to trigger download[/dim]")
+        else:
+            checks.append({"check": "gemma_ai", "status": "info", "detail": "Not installed (optional)"})
+            if not json_mode:
+                console.print("[dim]INFO[/dim] Gemma AI not installed (optional: pip install venvy[ai])")
+    except Exception:
+        checks.append({"check": "gemma_ai", "status": "info", "detail": "Not available"})
+        if not json_mode:
+            console.print("[dim]INFO[/dim] Gemma AI not available (optional: pip install venvy[ai])")
+
+    if json_mode:
+        all_ok = all(c["status"] in ("ok", "info") for c in checks)
+        _output_result({"checks": checks, "healthy": all_ok})
+    elif not json_mode:
+        console.print("")  # blank line at end
 
 
 @main.command('cleanup-registry')
-def cleanup_registry():
+@click.pass_context
+def cleanup_registry(ctx):
     """Remove registry entries that point to missing venv paths"""
+    json_mode = _is_json_mode(ctx)
     from venvy.registry import VenvRegistry
 
     registry = VenvRegistry()
     removed = registry.cleanup_missing()
 
-    if removed == 0:
+    if json_mode:
+        _output_result({"removed": removed})
+    elif removed == 0:
         console.print("[green]Registry is clean. No missing entries found.[/green]")
     else:
         console.print(f"[yellow]Removed {removed} missing registry entries.[/yellow]")
@@ -1033,9 +1335,7 @@ def shell_hook(shell):
         venvy shell-hook --shell fish >> ~/.config/fish/config.fish
     """
     from venvy.shell_integration import install_shell_hook, get_shell_config_path
-    import os
 
-    # Auto-detect shell if not specified
     if shell is None:
         shell_name = os.environ.get('SHELL', '').split('/')[-1]
         if 'bash' in shell_name:
@@ -1047,7 +1347,7 @@ def shell_hook(shell):
         elif sys.platform.startswith('win'):
             shell = 'powershell'
         else:
-            shell = 'bash'  # default
+            shell = 'bash'
 
     hook_content = install_shell_hook(shell)
     console.print(hook_content)
@@ -1065,8 +1365,7 @@ def shell_hook(shell):
 @click.option('--port', type=int, default=5173, help='Port for the UI server')
 def ui(port):
     """Start the local venvy UI"""
-    import subprocess
-    from pathlib import Path
+    import subprocess as sp
 
     ui_script = Path(__file__).resolve().parents[1] / "ui" / "serve.py"
     if not ui_script.exists():
@@ -1074,29 +1373,571 @@ def ui(port):
         return
 
     console.print(f"[green]Starting UI on http://127.0.0.1:{port}[/green]")
-    subprocess.run([sys.executable, str(ui_script), str(port)])
+    sp.run([sys.executable, str(ui_script), str(port)])
 
 
 @main.command()
-def stats():
+@click.pass_context
+def stats(ctx):
     """Show statistics about your venvs"""
+    json_mode = _is_json_mode(ctx)
     from venvy.registry import VenvRegistry
 
     registry = VenvRegistry()
-    stats = registry.get_stats()
+    stats_data = registry.get_stats()
 
-    console.print(Panel.fit(f"""
+    if json_mode:
+        _output_result(stats_data)
+    else:
+        console.print(Panel.fit(f"""
 [bold cyan]Virtual Environment Statistics[/bold cyan]
 
-Total Environments: {stats['total_venvs']}
-Total Disk Space:   {stats['total_size_mb']:.1f} MB
-Total Packages:     {stats['total_packages']}
+Total Environments: {stats_data['total_venvs']}
+Total Disk Space:   {stats_data['total_size_mb']:.1f} MB
+Total Packages:     {stats_data['total_packages']}
 
-Unused 30+ days:    {stats['unused_30_days']}
-Unused 90+ days:    {stats['unused_90_days']}
+Unused 30+ days:    {stats_data['unused_30_days']}
+Unused 90+ days:    {stats_data['unused_90_days']}
 """))
+
+
+# ============================================================================
+# ENVIRONMENT CONTROL COMMANDS (Agent-Safe!)
+# ============================================================================
+
+@main.command()
+@click.option('--python', 'python_version', help='Python version (e.g., 3.11)')
+@click.option('--packages', help='Space-separated packages to install')
+@click.option('--requirements', '-r', type=click.Path(exists=True, path_type=Path),
+              help='Requirements file')
+@click.option('--name', '-n', help='Environment name')
+@click.option('--path', '-p', type=click.Path(path_type=Path), help='Environment path')
+@click.pass_context
+def ensure(ctx, python_version, packages, requirements, name, path):
+    """Ensure environment exists with required packages (idempotent)
+
+    Creates the environment if it doesn't exist, verifies it if it does.
+    Reads venvy.json from project root if it exists.
+
+    Examples:
+        venvy ensure
+        venvy ensure --python 3.11 --packages "requests flask"
+        venvy ensure --requirements requirements.txt --json
+    """
+    json_mode = _is_json_mode(ctx)
+    from venvy.env_manager import EnvironmentManager
+
+    mgr = EnvironmentManager()
+    pkg_list = packages.split() if packages else None
+
+    result = mgr.ensure_environment(
+        path=path, name=name, python_version=python_version,
+        packages=pkg_list, requirements=requirements,
+        project_path=Path.cwd()
+    )
+
+    if json_mode:
+        _output_result(result, result.get("_exit_code", ExitCode.SUCCESS))
+    else:
+        status = result.get("status", "unknown")
+        env_path = result.get("path", "?")
+        py_ver = result.get("python_version", "?")
+
+        if result.get("_exit_code", 0) != 0:
+            console.print(f"[red]Error:[/red] {result.get('error', 'Unknown error')}")
+            sys.exit(result.get("_exit_code", ExitCode.GENERAL_ERROR))
+
+        if status == "created":
+            console.print(f"[green]Created new environment[/green]")
+        elif status == "updated":
+            console.print(f"[green]Updated existing environment[/green]")
+        else:
+            console.print(f"[green]Environment verified[/green]")
+
+        console.print(f"  Path: {env_path}")
+        console.print(f"  Python: {py_ver}")
+        if result.get("packages_installed"):
+            console.print(f"  Packages installed: {', '.join(result['packages_installed'])}")
+
+
+@main.command('safe-install')
+@click.argument('packages', nargs=-1)
+@click.option('--requirements', '-r', type=click.Path(exists=True, path_type=Path),
+              help='Requirements file')
+@click.option('--env', 'env_path', type=click.Path(exists=True, path_type=Path),
+              help='Environment path (default: auto-detect)')
+@click.option('--checkpoint-name', help='Name for the auto-checkpoint')
+@click.pass_context
+def safe_install(ctx, packages, requirements, env_path, checkpoint_name):
+    """Install packages with automatic checkpoint and rollback
+
+    Creates a checkpoint before installing. If the install fails,
+    automatically rolls back to the previous state.
+
+    Examples:
+        venvy safe-install requests flask
+        venvy safe-install -r requirements.txt --json
+        venvy safe-install numpy pandas --env .venv
+    """
+    json_mode = _is_json_mode(ctx)
+    from venvy.env_manager import EnvironmentManager
+
+    if env_path is None:
+        env_path = _auto_detect_env()
+
+    if env_path is None:
+        if json_mode:
+            _output_result({"error": "No environment found. Run 'venvy ensure' first."},
+                           ExitCode.ENV_NOT_FOUND)
+        console.print("[red]No environment found. Run 'venvy ensure' first.[/red]")
+        sys.exit(ExitCode.ENV_NOT_FOUND)
+
+    mgr = EnvironmentManager()
+    result = mgr.safe_install(
+        env_path=env_path,
+        packages=list(packages) if packages else None,
+        requirements=requirements,
+        checkpoint_name=checkpoint_name,
+    )
+
+    if json_mode:
+        _output_result(result, result.get("_exit_code", ExitCode.SUCCESS))
+    else:
+        status = result.get("status", "unknown")
+        if status == "success":
+            console.print("[green]Packages installed successfully[/green]")
+            if result.get("installed"):
+                console.print(f"  Installed: {', '.join(result['installed'])}")
+            console.print(f"  Checkpoint: {result.get('checkpoint_name', '?')}")
+        elif status == "rolled_back":
+            console.print("[yellow]Installation failed - rolled back to checkpoint[/yellow]")
+            console.print(f"  Error: {result.get('error', 'Unknown')}")
+        else:
+            console.print(f"[red]Installation failed:[/red] {result.get('error', 'Unknown')}")
+            sys.exit(result.get("_exit_code", ExitCode.GENERAL_ERROR))
+
+
+@main.command()
+@click.option('--name', '-n', help='Checkpoint name (auto-generated if omitted)')
+@click.option('--env', 'env_path', type=click.Path(exists=True, path_type=Path),
+              help='Environment path (default: auto-detect)')
+@click.pass_context
+def checkpoint(ctx, name, env_path):
+    """Create a snapshot of current environment state
+
+    Examples:
+        venvy checkpoint
+        venvy checkpoint --name "before-upgrade" --json
+        venvy checkpoint --env .venv
+    """
+    json_mode = _is_json_mode(ctx)
+    from venvy.env_manager import EnvironmentManager
+
+    if env_path is None:
+        env_path = _auto_detect_env()
+
+    if env_path is None:
+        if json_mode:
+            _output_result({"error": "No environment found"}, ExitCode.ENV_NOT_FOUND)
+        console.print("[red]No environment found[/red]")
+        sys.exit(ExitCode.ENV_NOT_FOUND)
+
+    mgr = EnvironmentManager()
+    result = mgr.create_checkpoint(env_path=env_path, name=name)
+
+    if json_mode:
+        _output_result(result, result.get("_exit_code", ExitCode.SUCCESS))
+    else:
+        if result.get("_exit_code", 0) != 0:
+            console.print(f"[red]Error:[/red] {result.get('error', 'Unknown')}")
+            sys.exit(result.get("_exit_code", ExitCode.GENERAL_ERROR))
+
+        console.print(f"[green]Checkpoint created[/green]")
+        console.print(f"  Name: {result.get('name', '?')}")
+        console.print(f"  Packages: {result.get('package_count', '?')}")
+        console.print(f"  ID: {result.get('checkpoint_id', '?')}")
+
+
+@main.command()
+@click.option('--checkpoint', 'checkpoint_name', help='Checkpoint name to restore')
+@click.option('--latest', is_flag=True, help='Use most recent checkpoint')
+@click.option('--env', 'env_path', type=click.Path(exists=True, path_type=Path),
+              help='Environment path (default: auto-detect)')
+@click.pass_context
+def rollback(ctx, checkpoint_name, latest, env_path):
+    """Restore environment to a checkpoint state
+
+    Examples:
+        venvy rollback --latest --json
+        venvy rollback --checkpoint "before-upgrade"
+        venvy rollback --latest --env .venv
+    """
+    json_mode = _is_json_mode(ctx)
+    from venvy.env_manager import EnvironmentManager
+
+    if env_path is None:
+        env_path = _auto_detect_env()
+
+    if env_path is None:
+        if json_mode:
+            _output_result({"error": "No environment found"}, ExitCode.ENV_NOT_FOUND)
+        console.print("[red]No environment found[/red]")
+        sys.exit(ExitCode.ENV_NOT_FOUND)
+
+    if not checkpoint_name and not latest:
+        if json_mode:
+            _output_result({"error": "Specify --checkpoint NAME or --latest"}, ExitCode.GENERAL_ERROR)
+        console.print("[red]Specify --checkpoint NAME or --latest[/red]")
+        sys.exit(ExitCode.GENERAL_ERROR)
+
+    mgr = EnvironmentManager()
+    result = mgr.rollback_to_checkpoint(
+        env_path=env_path,
+        checkpoint_name=checkpoint_name,
+        use_latest=latest,
+    )
+
+    if json_mode:
+        _output_result(result, result.get("_exit_code", ExitCode.SUCCESS))
+    else:
+        if result.get("_exit_code", 0) != 0:
+            console.print(f"[red]Error:[/red] {result.get('error', 'Unknown')}")
+            sys.exit(result.get("_exit_code", ExitCode.GENERAL_ERROR))
+
+        console.print(f"[green]Rolled back to checkpoint: {result.get('checkpoint_used', '?')}[/green]")
+        if result.get("packages_added"):
+            console.print(f"  Reinstalled: {', '.join(result['packages_added'])}")
+        if result.get("packages_removed"):
+            console.print(f"  Removed: {', '.join(result['packages_removed'])}")
+
+
+# ============================================================================
+# AI-POWERED COMMANDS (Optional - requires venvy[ai])
+# ============================================================================
+
+@main.command('analyze-error')
+@click.argument('error_text', required=False)
+@click.option('--file', '-f', 'error_file', type=click.Path(exists=True, path_type=Path),
+              help='Read error from file')
+@click.option('--stdin', 'use_stdin', is_flag=True, help='Read error from stdin')
+@click.pass_context
+def analyze_error(ctx, error_text, error_file, use_stdin):
+    """Analyze a pip/build error and suggest fixes (requires venvy[ai])
+
+    Pipe error output to get AI-powered fix suggestions using local Gemma 4 E2B.
+
+    Examples:
+        venvy analyze-error "ModuleNotFoundError: No module named 'foo'" --json
+        pip install broken-pkg 2>&1 | venvy analyze-error --stdin --json
+        venvy analyze-error --file error.log --json
+    """
+    json_mode = _is_json_mode(ctx)
+
+    from venvy.gemma import is_gemma_available, GemmaAnalyzer
+
+    if not is_gemma_available():
+        if json_mode:
+            _output_result({"error": "llama-cpp-python not installed",
+                           "hint": "pip install venvy[ai]"}, ExitCode.GEMMA_NOT_AVAILABLE)
+        console.print("[yellow]Gemma AI not available. Install with: pip install venvy[ai][/yellow]")
+        sys.exit(ExitCode.GEMMA_NOT_AVAILABLE)
+
+    # Read error text from argument, file, or stdin
+    if error_file:
+        error_text = error_file.read_text(encoding="utf-8", errors="ignore")
+    elif use_stdin:
+        error_text = click.get_text_stream('stdin').read()
+    elif not error_text:
+        if json_mode:
+            _output_result({"error": "No error text provided"}, ExitCode.GENERAL_ERROR)
+        console.print("[red]No error text provided. Pass as argument, --file, or --stdin[/red]")
+        sys.exit(ExitCode.GENERAL_ERROR)
+
+    analyzer = GemmaAnalyzer()
+
+    if not analyzer.is_model_downloaded():
+        if not _is_auto_yes(ctx) and not json_mode:
+            if not Confirm.ask("Gemma model not downloaded. Download now (~3.5GB)?"):
+                console.print("Cancelled")
+                return
+
+        if not json_mode:
+            console.print("Downloading Gemma 4 E2B model...")
+        success = analyzer.download_model()
+        if not success:
+            if json_mode:
+                _output_result({"error": "Failed to download model"}, ExitCode.GEMMA_NOT_AVAILABLE)
+            console.print("[red]Failed to download model[/red]")
+            sys.exit(ExitCode.GEMMA_NOT_AVAILABLE)
+
+    if not json_mode:
+        console.print("Analyzing error...")
+    result = analyzer.analyze_error(error_text)
+
+    if json_mode:
+        _output_result(result)
+    else:
+        console.print(f"\n[bold]Diagnosis:[/bold] {result.get('diagnosis', 'Unknown')}")
+        console.print(f"[bold]Root Cause:[/bold] {result.get('root_cause', 'Unknown')}")
+        if result.get("suggestions"):
+            console.print(f"\n[bold]Suggestions:[/bold]")
+            for s in result["suggestions"]:
+                console.print(f"  - {s.get('action', '?')}")
+                if s.get("command"):
+                    console.print(f"    Command: [cyan]{s['command']}[/cyan]")
+
+
+@main.command('smart-setup')
+@click.option('--path', '-p', type=click.Path(exists=True, path_type=Path),
+              default='.', help='Project path to scan')
+@click.option('--apply', is_flag=True, help='Automatically apply the suggested setup')
+@click.pass_context
+def smart_setup(ctx, path, apply):
+    """Scan project and suggest environment configuration (requires venvy[ai])
+
+    Uses Gemma 4 E2B to analyze your project files and suggest the optimal
+    Python version, packages, and environment configuration.
+
+    Examples:
+        venvy smart-setup --json
+        venvy smart-setup --path ./myproject --apply
+    """
+    json_mode = _is_json_mode(ctx)
+
+    from venvy.gemma import is_gemma_available, GemmaAnalyzer
+
+    if not is_gemma_available():
+        if json_mode:
+            _output_result({"error": "llama-cpp-python not installed",
+                           "hint": "pip install venvy[ai]"}, ExitCode.GEMMA_NOT_AVAILABLE)
+        console.print("[yellow]Gemma AI not available. Install with: pip install venvy[ai][/yellow]")
+        sys.exit(ExitCode.GEMMA_NOT_AVAILABLE)
+
+    analyzer = GemmaAnalyzer()
+
+    if not analyzer.is_model_downloaded():
+        if not _is_auto_yes(ctx) and not json_mode:
+            if not Confirm.ask("Gemma model not downloaded. Download now (~3.5GB)?"):
+                console.print("Cancelled")
+                return
+        if not json_mode:
+            console.print("Downloading Gemma 4 E2B model...")
+        success = analyzer.download_model()
+        if not success:
+            if json_mode:
+                _output_result({"error": "Failed to download model"}, ExitCode.GEMMA_NOT_AVAILABLE)
+            console.print("[red]Failed to download model[/red]")
+            sys.exit(ExitCode.GEMMA_NOT_AVAILABLE)
+
+    if not json_mode:
+        console.print(f"Scanning project at {path}...")
+    result = analyzer.smart_setup(Path(path))
+
+    if apply:
+        from venvy.env_manager import EnvironmentManager
+        mgr = EnvironmentManager()
+        ensure_result = mgr.ensure_environment(
+            python_version=result.get("python_version"),
+            packages=result.get("packages"),
+            project_path=Path(path),
+        )
+        result["applied"] = True
+        result["ensure_result"] = ensure_result
+
+    if json_mode:
+        _output_result(result)
+    else:
+        console.print(f"\n[bold]Suggested Configuration:[/bold]")
+        console.print(f"  Python: {result.get('python_version', '?')}")
+        console.print(f"  Packages: {', '.join(result.get('packages', []))}")
+        if result.get("dev_packages"):
+            console.print(f"  Dev packages: {', '.join(result['dev_packages'])}")
+        if result.get("applied"):
+            console.print(f"\n[green]Configuration applied![/green]")
+
+
+@main.command()
+@click.option('--python', 'python_version', help='Python version (e.g., 3.11)')
+@click.option('--no-hook', 'no_hook', is_flag=True, help='Skip pip wrapper hook installation')
+@click.option('--no-claude-md', 'no_claude_md', is_flag=True, help='Skip CLAUDE.md generation')
+@click.option('--no-pip-config', 'no_pip_config', is_flag=True, help='Skip pip.ini configuration')
+@click.option('--force', '-f', is_flag=True, help='Overwrite existing CLAUDE.md/venvy.json')
+@click.pass_context
+def init(ctx, python_version, no_hook, no_claude_md, no_pip_config, force):
+    """Initialize venvy observability for this project (one-time setup)
+
+    Sets up virtual environment, pip monitoring hook, CLAUDE.md agent
+    instructions, and venvy.json project config.
+
+    Examples:
+        venvy init
+        venvy init --python 3.11
+        venvy init --no-hook --json
+    """
+    json_mode = _is_json_mode(ctx)
+
+    from venvy.init_manager import InitManager
+
+    mgr = InitManager()
+
+    if not json_mode:
+        console.print("[bold]Initializing venvy for this project...[/bold]\n")
+
+    result = mgr.initialize_project(
+        project_path=Path("."),
+        python_version=python_version,
+        install_hook=not no_hook,
+        generate_claude=not no_claude_md,
+        configure_pip=not no_pip_config,
+        force=force,
+    )
+
+    exit_code = result.get("_exit_code", ExitCode.SUCCESS)
+    steps = result.get("steps", {})
+
+    if json_mode:
+        output = {k: v for k, v in steps.items()}
+        _output_result(output, exit_code)
+    else:
+        for step_name, step_result in steps.items():
+            status = step_result.get("status", "unknown")
+            detail = step_result.get("detail", "")
+            if status == "created":
+                console.print(f"  [green]CREATED[/green] {step_name}: {detail}")
+            elif status == "skipped":
+                console.print(f"  [yellow]SKIPPED[/yellow] {step_name}: {detail}")
+            elif status == "verified":
+                console.print(f"  [green]OK[/green] {step_name}: {detail}")
+            elif status == "error":
+                console.print(f"  [red]ERROR[/red] {step_name}: {detail}")
+            else:
+                console.print(f"  [dim]{status}[/dim] {step_name}: {detail}")
+
+        console.print("\n[green bold]venvy initialized![/green bold] Pip installs are now monitored.")
+        console.print("[dim]Run 'venvy status --json' to check environment health.[/dim]")
+
+
+@main.command('_pip-event', hidden=True)
+@click.option('--before', 'is_before', is_flag=True)
+@click.option('--after', 'is_after', is_flag=True)
+@click.option('--action', type=click.Choice(['install', 'uninstall']), default='install')
+@click.option('--packages', default='')
+@click.option('--exit-code', 'pip_exit_code', type=int, default=0)
+@click.pass_context
+def pip_event(ctx, is_before, is_after, action, packages, pip_exit_code):
+    """Internal: called by pip wrapper to log install/uninstall events."""
+    json_mode = _is_json_mode(ctx)
+
+    env_path_str = os.environ.get('VIRTUAL_ENV')
+    if not env_path_str:
+        if json_mode:
+            _output_result({"skipped": True, "reason": "no active venv"})
+        return
+
+    env_path = Path(env_path_str)
+    context_file = env_path / ".venvy_pip_context.json"
+
+    from venvy.pip_observer import PipObserver
+
+    observer = PipObserver()
+
+    if is_before:
+        context = observer.before_event(env_path, action, packages)
+        # Write context for --after to pick up
+        try:
+            context_file.write_text(json.dumps(context, default=str), encoding="utf-8")
+        except Exception:
+            pass
+        if json_mode:
+            _output_result({"phase": "before", "snapshot_taken": True})
+
+    elif is_after:
+        # Read context from --before
+        context = {}
+        if context_file.exists():
+            try:
+                context = json.loads(context_file.read_text(encoding="utf-8"))
+                context_file.unlink()
+            except Exception:
+                pass
+
+        result = observer.after_event(env_path, context, pip_exit_code, action, packages)
+        if json_mode:
+            _output_result(result)
+
+
+@main.command()
+@click.option('--env', 'env_path', type=click.Path(path_type=Path),
+              help='Environment path (auto-detected if not specified)')
+@click.pass_context
+def status(ctx, env_path):
+    """Show environment health and recent activity
+
+    Returns a structured health report with recent pip events, alerts,
+    disk usage, and overall health rating. Designed for agent consumption.
+
+    Examples:
+        venvy status --json
+        venvy status --env .venv --json
+    """
+    json_mode = _is_json_mode(ctx)
+
+    if env_path is None:
+        env_path = _auto_detect_env()
+
+    from venvy.pip_observer import PipObserver
+
+    observer = PipObserver()
+    report = observer.get_status_report(env_path)
+
+    if json_mode:
+        _output_result(report)
+    else:
+        health = report.get("health", "unknown")
+        health_colors = {"good": "green", "warn": "yellow", "critical": "red"}
+        color = health_colors.get(health, "dim")
+
+        console.print(f"[bold]Environment Health:[/bold] [{color}]{health.upper()}[/{color}]")
+
+        if report.get("env_path"):
+            console.print(f"  Path: {report['env_path']}")
+        if report.get("python_version"):
+            console.print(f"  Python: {report['python_version']}")
+        if report.get("total_size_mb") is not None:
+            console.print(f"  Size: {report['total_size_mb']:.1f} MB")
+        if report.get("package_count") is not None:
+            console.print(f"  Packages: {report['package_count']}")
+
+        # Recent events
+        events = report.get("recent_events", [])
+        if events:
+            console.print(f"\n[bold]Recent Activity:[/bold] ({len(events)} events)")
+            for e in events[:5]:
+                action = e.get("action", "?")
+                pkgs = e.get("packages", [])
+                pkg_str = ", ".join(pkgs[:3]) if pkgs else "?"
+                if pkgs and len(pkgs) > 3:
+                    pkg_str += f" +{len(pkgs) - 3} more"
+                delta = e.get("size_delta_mb")
+                delta_str = f" (+{delta:.1f}MB)" if delta else ""
+                console.print(f"  {action}: {pkg_str}{delta_str}")
+
+        # Alerts
+        alerts = report.get("alerts", [])
+        if alerts:
+            console.print(f"\n[bold]Alerts:[/bold]")
+            for a in alerts:
+                level = a.get("level", "info")
+                msg = a.get("message", "?")
+                level_color = {"warn": "yellow", "critical": "red"}.get(level, "dim")
+                console.print(f"  [{level_color}]{level.upper()}[/{level_color}] {msg}")
+
+        # Checkpoint info
+        if report.get("last_checkpoint"):
+            console.print(f"\n  Last checkpoint: {report['last_checkpoint']}")
+            if report.get("events_since_checkpoint") is not None:
+                console.print(f"  Events since: {report['events_since_checkpoint']}")
 
 
 if __name__ == '__main__':
     main()
-

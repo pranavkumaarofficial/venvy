@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "venvy"
-version = "0.2.0"
-description = "Fast virtual environment manager with registry-based tracking"
+version = "0.4.0"
+description = "Agent-safe Python virtual environment manager with checkpoint/rollback and local AI error analysis"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
@@ -22,10 +22,11 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: System :: Systems Administration",
 ]
-keywords = ["python", "virtual-environment", "venv", "conda", "environment-management"]
+keywords = ["python", "virtual-environment", "venv", "conda", "environment-management", "ai-agent", "checkpoint", "rollback"]
 requires-python = ">=3.8"
 dependencies = [
     "click>=8.0.0",
@@ -41,6 +42,9 @@ dev = [
     "black>=22.0",
     "isort>=5.10",
     "mypy>=1.0",
+]
+ai = [
+    "llama-cpp-python>=0.2.0",
 ]
 
 [project.scripts]

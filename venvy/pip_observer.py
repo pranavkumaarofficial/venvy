@@ -2,7 +2,6 @@
 Pip event observer for venvy's active observability layer.
 
 Called by the shell pip wrapper hook. Must be fast (<500ms for typical operations).
-Gemma is only loaded on-demand when alert thresholds are crossed.
 """
 import subprocess
 import time
@@ -105,21 +104,6 @@ class PipObserver:
             alert_message=alert_message,
         )
 
-        # On-demand Gemma analysis if alert triggered
-        gemma_result = None
-        if alert_level and event_id:
-            gemma_result = self._run_gemma_analysis({
-                "action": log_action,
-                "packages_added": packages_added,
-                "packages_removed": packages_removed,
-                "size_delta_mb": size_delta_mb,
-                "total_env_size_mb": total_env_size,
-                "exit_code": exit_code,
-                "after_freeze": after_freeze,
-            })
-            if gemma_result:
-                self.registry.update_event_analysis(event_id, gemma_result)
-
         # Refresh registry metadata (lightweight: just package count)
         try:
             self.registry.refresh_metadata(env_path)
@@ -135,7 +119,6 @@ class PipObserver:
             "duration_seconds": round(duration, 2),
             "alert_level": alert_level,
             "alert_message": alert_message,
-            "gemma_analysis": gemma_result,
         }
 
     def get_status_report(self, env_path: Optional[Path] = None) -> Dict:
@@ -257,21 +240,6 @@ class PipObserver:
             return ("info", f"Environment is large: {total_env_size_mb:.0f}MB total")
 
         return (None, None)
-
-    def _run_gemma_analysis(self, event_data: Dict) -> Optional[Dict]:
-        """Load Gemma on-demand, analyze event, let GC free the model."""
-        try:
-            from venvy.gemma import is_gemma_available, GemmaAnalyzer
-            if not is_gemma_available():
-                return None
-
-            analyzer = GemmaAnalyzer()
-            if not analyzer.is_model_downloaded():
-                return None
-
-            return analyzer.analyze_event(event_data)
-        except Exception:
-            return None
 
     def _get_pip_freeze(self, env_path: Path) -> List[str]:
         """Run pip list --format=freeze. Reuses the same pattern as env_manager."""

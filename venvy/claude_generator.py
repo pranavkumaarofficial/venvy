@@ -21,7 +21,7 @@ structured JSON output for agent-friendly workflows.
 - ALWAYS use `venvy safe-install` to install packages (auto-rollback on failure).
 - ALWAYS use `--json` flag for structured output you can parse.
 - PERIODICALLY run `venvy status --json` to check environment health.
-- If a `pip install` fails, run `venvy analyze-error` to get fix suggestions.
+- Run `venvy audit --json` to check installed packages for known-vulnerable or malicious versions.
 - Before risky changes, run `venvy checkpoint` to save environment state.
 
 ## Environment Info
@@ -64,6 +64,13 @@ venvy stats --json
 venvy doctor --json
 ```
 
+### Security Audit (known-vulnerable / malicious packages)
+```bash
+venvy audit --json                 # scan all known environments
+venvy audit --env .venv --json     # a single environment
+venvy audit --offline --json       # never touch the network (deterministic CI)
+```
+
 ## Exit Codes
 
 | Code | Meaning |
@@ -74,8 +81,11 @@ venvy doctor --json
 | 3 | Dependency conflict |
 | 4 | Python version not found |
 | 5 | Checkpoint not found |
-| 6 | Gemma AI not available |
 | 7 | Permission denied |
+| 20 | Audit: vulnerable package(s) found |
+| 21 | Audit: malicious package(s) found |
+| 22 | Audit: completed with caveats (stale DB or unknowns) |
+| 23 | Audit: no advisory database (run `venvy audit --refresh`) |
 
 ## JSON Output
 

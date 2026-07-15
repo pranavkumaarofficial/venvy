@@ -2,7 +2,7 @@
 
 This project uses **venvy** for Python virtual environment management.
 venvy is an agent-safe environment layer with structured JSON output,
-semantic exit codes, checkpoint/rollback, and local AI error analysis.
+semantic exit codes, checkpoint/rollback, and offline supply-chain auditing.
 
 ## Rules
 
@@ -11,7 +11,7 @@ semantic exit codes, checkpoint/rollback, and local AI error analysis.
 - ALWAYS use `venvy ensure` to create or verify environments.
 - ALWAYS use `venvy safe-install` to install packages (auto-rollback on failure).
 - ALWAYS use `--json` flag for structured output you can parse.
-- If a `pip install` fails, run `venvy analyze-error` to get fix suggestions.
+- Run `venvy audit --json` to check installed packages for known-vulnerable or malicious versions.
 - Before risky changes, run `venvy checkpoint` to save environment state.
 
 ## Quick Reference
@@ -44,6 +44,17 @@ venvy stats --json                 # Show statistics
 venvy doctor --json                # Diagnose issues
 ```
 
+### Security Audit (known-vulnerable / malicious packages)
+```bash
+venvy audit --json                 # Scan all known environments
+venvy audit --env .venv --json     # Scan a single environment
+venvy audit --offline --json       # Never touch the network (deterministic CI)
+venvy audit --refresh --json       # Update the advisory database, then scan
+```
+On the first run, `venvy audit` downloads a one-time advisory database (~30MB);
+every scan after that is fully offline. Exit code precedence:
+malicious (21) > vulnerable (20) > stale/partial (22).
+
 ## Exit Codes (parse these for error handling)
 
 | Code | Meaning |
@@ -54,8 +65,11 @@ venvy doctor --json                # Diagnose issues
 | 3 | Dependency conflict |
 | 4 | Python version not found |
 | 5 | Checkpoint not found |
-| 6 | Gemma AI not available (optional) |
 | 7 | Permission denied |
+| 20 | Audit: vulnerable package(s) found |
+| 21 | Audit: malicious package(s) found |
+| 22 | Audit: completed with caveats (stale DB or unknowns) |
+| 23 | Audit: no advisory database (run `venvy audit --refresh`) |
 
 ## JSON Output Format
 

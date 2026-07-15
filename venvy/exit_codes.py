@@ -13,7 +13,7 @@ class ExitCode:
     DEPENDENCY_CONFLICT = 3
     PYTHON_VERSION_NOT_FOUND = 4
     CHECKPOINT_NOT_FOUND = 5
-    GEMMA_NOT_AVAILABLE = 6
+    # 6 retired (was GEMMA_NOT_AVAILABLE; the on-device LLM was removed)
     PERMISSION_DENIED = 7
     INIT_FAILED = 8
 

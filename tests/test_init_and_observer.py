@@ -86,20 +86,6 @@ class TestPipEventsCRUD:
         assert alerts[0].alert_level == "warn"
         assert alerts[0].alert_message == "Large install"
 
-    def test_update_event_analysis(self, tmp_path):
-        from venvy.registry import VenvRegistry
-
-        with patch("venvy.utils.get_venvy_data_dir", return_value=tmp_path):
-            reg = VenvRegistry()
-            event_id = reg.log_pip_event(env_path=tmp_path / ".venv", action="install")
-
-        analysis = {"assessment": "Looks fine", "severity": "info"}
-        result = reg.update_event_analysis(event_id, analysis)
-        assert result is True
-
-        events = reg.get_recent_events(tmp_path / ".venv", limit=1)
-        assert events[0].gemma_analysis == analysis
-
     def test_get_all_events_across_envs(self, tmp_path):
         from venvy.registry import VenvRegistry
 
@@ -375,68 +361,6 @@ class TestInitManager:
         assert claude_md.read_text() != "old content"
         assert "venvy" in claude_md.read_text()
         assert result["steps"]["claude_md"]["status"] == "created"
-
-
-# ========================================================================
-# GEMMA EVENT ANALYSIS FALLBACK
-# ========================================================================
-
-class TestGemmaEventAnalysis:
-    def test_fallback_normal_event(self):
-        from venvy.gemma import GemmaAnalyzer
-        analyzer = GemmaAnalyzer()
-
-        result = analyzer._fallback_analyze_event({
-            "size_delta_mb": 10,
-            "packages_added": ["flask==3.0.0"],
-            "total_env_size_mb": 200,
-            "exit_code": 0,
-        })
-
-        assert result["severity"] == "info"
-        assert result["assessment"] == "Normal operation"
-
-    def test_fallback_large_install(self):
-        from venvy.gemma import GemmaAnalyzer
-        analyzer = GemmaAnalyzer()
-
-        result = analyzer._fallback_analyze_event({
-            "size_delta_mb": 600,
-            "packages_added": ["torch"],
-            "total_env_size_mb": 800,
-            "exit_code": 0,
-        })
-
-        assert result["severity"] == "warn"
-        assert "Large" in result["assessment"]
-
-    def test_fallback_many_packages(self):
-        from venvy.gemma import GemmaAnalyzer
-        analyzer = GemmaAnalyzer()
-
-        result = analyzer._fallback_analyze_event({
-            "size_delta_mb": 50,
-            "packages_added": [f"pkg{i}" for i in range(25)],
-            "total_env_size_mb": 300,
-            "exit_code": 0,
-        })
-
-        assert result["severity"] == "warn"
-        assert "dependencies" in result["assessment"].lower() or "Many" in result["assessment"]
-
-    def test_fallback_failed_install(self):
-        from venvy.gemma import GemmaAnalyzer
-        analyzer = GemmaAnalyzer()
-
-        result = analyzer._fallback_analyze_event({
-            "size_delta_mb": 0,
-            "packages_added": [],
-            "total_env_size_mb": 200,
-            "exit_code": 1,
-        })
-
-        assert result["severity"] == "warn"
-        assert "failed" in result["assessment"].lower()
 
 
 # ========================================================================

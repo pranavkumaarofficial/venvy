@@ -78,7 +78,6 @@ class PipEventRecord:
     duration_seconds: Optional[float] = None
     alert_level: Optional[str] = None
     alert_message: Optional[str] = None
-    gemma_analysis: Optional[Dict] = None
     created_at: Optional[str] = None
 
     def to_dict(self) -> dict:
@@ -158,7 +157,6 @@ class VenvRegistry:
                 duration_seconds REAL,
                 alert_level TEXT,
                 alert_message TEXT,
-                gemma_analysis TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -707,8 +705,7 @@ class VenvRegistry:
                       size_delta_mb: Optional[float] = None,
                       duration_seconds: Optional[float] = None,
                       alert_level: Optional[str] = None,
-                      alert_message: Optional[str] = None,
-                      gemma_analysis: Optional[Dict] = None) -> Optional[int]:
+                      alert_message: Optional[str] = None) -> Optional[int]:
         """Log a pip install/uninstall event. Returns event ID."""
         conn = sqlite3.connect(str(self.db_path))
         cursor = conn.cursor()
@@ -720,8 +717,8 @@ class VenvRegistry:
                 (env_path, action, packages, pip_args, exit_code,
                  before_freeze, after_freeze, packages_added, packages_removed,
                  size_before_mb, size_after_mb, size_delta_mb, duration_seconds,
-                 alert_level, alert_message, gemma_analysis, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 alert_level, alert_message, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 str(Path(env_path).resolve()),
                 action,
@@ -738,7 +735,6 @@ class VenvRegistry:
                 duration_seconds,
                 alert_level,
                 alert_message,
-                json.dumps(gemma_analysis) if gemma_analysis else None,
                 timestamp,
             ))
             conn.commit()
@@ -847,21 +843,6 @@ class VenvRegistry:
         finally:
             conn.close()
 
-    def update_event_analysis(self, event_id: int, gemma_analysis: Dict) -> bool:
-        """Store Gemma analysis result on an existing event."""
-        conn = sqlite3.connect(str(self.db_path))
-        cursor = conn.cursor()
-
-        try:
-            cursor.execute(
-                "UPDATE pip_events SET gemma_analysis = ? WHERE id = ?",
-                (json.dumps(gemma_analysis), event_id)
-            )
-            conn.commit()
-            return cursor.rowcount > 0
-        finally:
-            conn.close()
-
     def _row_to_event(self, row) -> PipEventRecord:
         """Convert a DB row to a PipEventRecord."""
         def _parse_json_list(val):
@@ -870,14 +851,6 @@ class VenvRegistry:
                     return json.loads(val)
                 except (json.JSONDecodeError, TypeError):
                     return []
-            return None
-
-        def _parse_json_dict(val):
-            if val:
-                try:
-                    return json.loads(val)
-                except (json.JSONDecodeError, TypeError):
-                    return None
             return None
 
         return PipEventRecord(
@@ -897,7 +870,6 @@ class VenvRegistry:
             duration_seconds=row['duration_seconds'],
             alert_level=row['alert_level'],
             alert_message=row['alert_message'],
-            gemma_analysis=_parse_json_dict(row['gemma_analysis']),
             created_at=row['created_at'],
         )
 

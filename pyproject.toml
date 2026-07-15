@@ -43,9 +43,6 @@ dev = [
     "isort>=5.10",
     "mypy>=1.0",
 ]
-ai = [
-    "llama-cpp-python>=0.2.0",
-]
 
 [project.scripts]
 venvy = "venvy.cli:main"

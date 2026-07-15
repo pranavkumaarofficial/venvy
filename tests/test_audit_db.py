@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from venvy.audit.db import AdvisoryDB, compile_database
+from venvy.audit.db import AdvisoryDB, AdvisoryDBError, compile_database
 from venvy.audit.matcher import MatchStatus, version_status
 
 
@@ -167,8 +167,65 @@ def test_meta_and_freshness(tmp_path):
 
 
 def test_missing_db_raises(tmp_path):
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(AdvisoryDBError):
         AdvisoryDB(tmp_path / "nope.sqlite")
+
+
+# ---------------------------------------------------------------------------
+# DB usability guard (regression for the QA-found crash + false all-clear).
+# A corrupt DB must fail loudly; an EMPTY-but-valid DB must ALSO fail rather
+# than silently report every package clean.
+# ---------------------------------------------------------------------------
+def _good_db(tmp_path):
+    dbfile = tmp_path / "audit" / "osv.sqlite"
+    compile_database(dbfile, [_osv("PYSEC-1", "requests",
+                                   events=[{"introduced": "0"}, {"fixed": "2.20"}])])
+    return dbfile
+
+
+def test_truncated_db_raises_not_crashes(tmp_path):
+    dbfile = _good_db(tmp_path)
+    with open(dbfile, "r+b") as fh:
+        fh.truncate(2048)   # corrupt the SQLite image
+    with pytest.raises(AdvisoryDBError):
+        AdvisoryDB(dbfile)
+
+
+def test_zero_byte_db_raises(tmp_path):
+    dbfile = tmp_path / "audit" / "osv.sqlite"
+    dbfile.parent.mkdir(parents=True)
+    dbfile.write_bytes(b"")
+    with pytest.raises(AdvisoryDBError):
+        AdvisoryDB(dbfile)
+
+
+def test_garbage_db_raises(tmp_path):
+    dbfile = tmp_path / "audit" / "osv.sqlite"
+    dbfile.parent.mkdir(parents=True)
+    dbfile.write_bytes(b"this is not a sqlite database" * 100)
+    with pytest.raises(AdvisoryDBError):
+        AdvisoryDB(dbfile)
+
+
+def test_valid_but_empty_db_raises_no_false_all_clear(tmp_path):
+    # The dangerous one: valid schema, 0 advisories. Opening it must fail rather than
+    # let a scan report a vulnerable env as clean.
+    dbfile = tmp_path / "audit" / "empty.sqlite"
+    compile_database(dbfile, [])   # 0 advisories
+    with pytest.raises(AdvisoryDBError):
+        AdvisoryDB(dbfile)
+
+
+def test_refresh_guard_does_not_publish_empty_over_good(tmp_path):
+    # A degenerate (0-advisory) compile with min_advisories=1 must NOT replace an
+    # existing good database.
+    dbfile = _good_db(tmp_path)
+    before = dbfile.read_bytes()
+    with pytest.raises(ValueError):
+        compile_database(dbfile, [], min_advisories=1)
+    assert dbfile.read_bytes() == before   # untouched
+    with AdvisoryDB(dbfile) as db:          # still usable
+        assert db.advisories_for("requests")
 
 
 # ---------------------------------------------------------------------------

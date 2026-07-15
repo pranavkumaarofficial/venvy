@@ -88,3 +88,31 @@ def test_audit_missing_db_exit_23(tmp_path, monkeypatch):
     payload = json.loads(result.output)
     assert payload["success"] is False
     assert "refresh" in payload["error"]
+
+
+def test_audit_corrupt_db_exit_23_valid_json(tmp_path, monkeypatch):
+    # Regression: a corrupt DB must yield clean exit 23 + valid JSON, never a traceback.
+    dbfile = tmp_path / "audit" / "osv.sqlite"
+    compile_database(dbfile, [_osv("PYSEC-1", "requests",
+                                   events=[{"introduced": "0"}, {"fixed": "2.20"}])])
+    with open(dbfile, "r+b") as fh:
+        fh.truncate(2048)
+    monkeypatch.setattr(audit_db, "default_db_path", lambda: dbfile)
+    env = _env(tmp_path, "proj", ["requests-2.19.0.dist-info"])
+    result = CliRunner().invoke(main, ["audit", "--json", "--env", str(env)])
+    assert result.exit_code == 23
+    payload = json.loads(result.output)          # must be valid JSON, not a traceback
+    assert payload["success"] is False
+    assert "refresh" in payload["error"]
+
+
+def test_audit_empty_db_exit_23_not_false_clean(tmp_path, monkeypatch):
+    # Regression: a valid-but-empty DB must fail (23), NOT report the vulnerable env clean.
+    dbfile = tmp_path / "audit" / "empty.sqlite"
+    compile_database(dbfile, [])                  # 0 advisories
+    monkeypatch.setattr(audit_db, "default_db_path", lambda: dbfile)
+    env = _env(tmp_path, "proj", ["requests-2.19.0.dist-info"])
+    result = CliRunner().invoke(main, ["audit", "--json", "--env", str(env)])
+    assert result.exit_code == 23                 # NOT 0
+    payload = json.loads(result.output)
+    assert payload["success"] is False

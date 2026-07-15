@@ -144,11 +144,17 @@ def compile_database(
     dest_path: Path,
     records: Iterable[dict],
     source_meta: Optional[dict] = None,
+    min_advisories: int = 0,
 ) -> BuildReport:
     """Compile raw OSV record dicts into an atomic SQLite snapshot at ``dest_path``.
 
     Never raises on a bad individual record — malformed entries are counted in
     ``report.skipped`` and skipped, so one broken advisory can't abort the whole build.
+
+    ``min_advisories`` guards the atomic publish: if the build produced fewer than this
+    many advisories (e.g. a degenerate/empty refresh), the temp DB is discarded and any
+    existing ``dest_path`` is left untouched, so a good database is never replaced by an
+    empty one. ``refresh_database`` sets this to 1.
     """
     start = _now()
     dest_path = Path(dest_path)
@@ -244,6 +250,20 @@ def compile_database(
         conn.commit()
     finally:
         conn.close()
+
+    # Refuse to publish a degenerate database over an existing good one. This closes
+    # the "silent false all-clear" path: a refresh that yields 0 advisories must NOT
+    # replace a working DB with an empty one.
+    if report.advisories < min_advisories:
+        try:
+            os.remove(str(tmp_path))
+        except OSError:
+            pass
+        raise ValueError(
+            "refusing to publish advisory database with %d advisories "
+            "(minimum %d); existing database left untouched"
+            % (report.advisories, min_advisories)
+        )
 
     # Atomic publish: fsync the temp file, then replace the live DB in one step.
     _fsync_file(tmp_path)
@@ -348,7 +368,8 @@ def refresh_database(
             "sources": sources,
         }
         return compile_database(
-            dest_path, itertools.chain(*record_streams), source_meta=source_meta
+            dest_path, itertools.chain(*record_streams), source_meta=source_meta,
+            min_advisories=1,
         )
 
 
@@ -359,13 +380,23 @@ def default_db_path() -> Path:
     return get_venvy_data_dir() / "audit" / "osv-pypi.sqlite"
 
 
+class AdvisoryDBError(Exception):
+    """The advisory database is missing, corrupt, or empty — i.e. NOT usable.
+
+    Raised on open so a scan never proceeds against a database it cannot trust. A
+    corrupt DB must fail loudly (never crash mid-scan), and an EMPTY-but-valid DB must
+    fail too — otherwise every package reads as "clean", a silent false all-clear
+    (invariant #1). Callers map this to exit code AUDIT_DB_MISSING.
+    """
+
+
 class AdvisoryDB:
     """Read-only accessor over a compiled snapshot. Cheap to open; call ``close``."""
 
     def __init__(self, path: Optional[Path] = None):
         self.path = Path(path) if path else default_db_path()
         if not self.path.exists():
-            raise FileNotFoundError(
+            raise AdvisoryDBError(
                 "advisory database not found at %s — run `venvy audit --refresh`"
                 % self.path
             )
@@ -377,6 +408,34 @@ class AdvisoryDB:
         self._conn = sqlite3.connect(uri, uri=True)
         self._conn.row_factory = sqlite3.Row
         self._meta_cache: Optional[dict] = None
+        self._validate_usable()
+
+    def _validate_usable(self) -> None:
+        """Fail closed at open time on a corrupt, incomplete, or empty database.
+
+        Catches both failure modes found in QA:
+          * corrupt / truncated / garbage / zero-byte -> sqlite raises DatabaseError,
+            which without this would surface mid-scan as an uncaught traceback (exit 1,
+            broken JSON) instead of a clean AUDIT_DB_MISSING.
+          * valid schema but 0 advisories (e.g. a degenerate refresh) -> every scan
+            would report "clean": a silent false all-clear. Refuse to open it.
+        """
+        try:
+            n_adv = self._conn.execute("SELECT count(*) FROM advisories").fetchone()[0]
+            # Ensure the table the scan actually queries exists and is readable.
+            self._conn.execute("SELECT 1 FROM affected LIMIT 1").fetchone()
+        except sqlite3.DatabaseError as exc:
+            self._conn.close()
+            raise AdvisoryDBError(
+                "advisory database at %s is unreadable or corrupt (%s) — "
+                "run `venvy audit --refresh`" % (self.path, exc)
+            )
+        if n_adv == 0:
+            self._conn.close()
+            raise AdvisoryDBError(
+                "advisory database at %s is empty (0 advisories) — "
+                "run `venvy audit --refresh`" % self.path
+            )
 
     # -- metadata / staleness -------------------------------------------------
     @property

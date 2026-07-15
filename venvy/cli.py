@@ -1969,7 +1969,7 @@ def audit(ctx, json_flag, refresh, env_paths, scan, include_toolchain):
 
     from venvy.audit import report as audit_report
     from venvy.audit.scanner import scan as run_scan
-    from venvy.audit.db import default_db_path, refresh_database
+    from venvy.audit.db import AdvisoryDBError, default_db_path, refresh_database
 
     db_path = default_db_path()
 
@@ -1997,14 +1997,15 @@ def audit(ctx, json_flag, refresh, env_paths, scan, include_toolchain):
                 console.print("[yellow]refresh failed (%s); using existing database"
                               "[/yellow]" % exc)
 
-    # --- database must exist ---------------------------------------------
-    if not db_path.exists():
-        _fail_audit(json_mode, ExitCode.AUDIT_DB_MISSING,
-                    "no advisory database found — run `venvy audit --refresh`")
-
     # --- scan -------------------------------------------------------------
+    # AdvisoryDB validates on open: a missing, corrupt, or EMPTY database raises
+    # AdvisoryDBError, which we map to a clean exit 23 (never a traceback, never a
+    # silent "clean" from an empty DB) in both human and JSON mode.
     targets = [Path(p) for p in env_paths] if env_paths else None
-    result = run_scan(env_paths=targets, db_path=db_path, include_scan=scan)
+    try:
+        result = run_scan(env_paths=targets, db_path=db_path, include_scan=scan)
+    except AdvisoryDBError as exc:
+        _fail_audit(json_mode, ExitCode.AUDIT_DB_MISSING, str(exc))
     exit_code = audit_report.decide_exit_code(result, include_toolchain)
 
     if json_mode:

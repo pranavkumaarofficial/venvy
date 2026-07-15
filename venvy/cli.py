@@ -1939,5 +1939,96 @@ def status(ctx, env_path):
                 console.print(f"  Events since: {report['events_since_checkpoint']}")
 
 
+@main.command()
+@click.option('--json', 'json_flag', is_flag=True, help='Output as JSON')
+@click.option('--refresh', is_flag=True,
+              help='Download the latest advisory database, then scan')
+@click.option('--env', 'env_paths', type=click.Path(path_type=Path), multiple=True,
+              help='Audit a specific environment (repeatable). Default: all known envs')
+@click.option('--scan', is_flag=True,
+              help='Also discover unregistered environments on disk')
+@click.option('--include-toolchain', is_flag=True,
+              help='Include pip/setuptools/wheel in findings and the exit code')
+@click.pass_context
+def audit(ctx, json_flag, refresh, env_paths, scan, include_toolchain):
+    """Audit environments for known-vulnerable and malicious packages.
+
+    Scans every registered environment (or those given with --env) against a local,
+    offline advisory database compiled from OSV. Application-dependency findings drive
+    the exit code; pip/setuptools/wheel are reported but excluded from the gate unless
+    --include-toolchain is passed.
+
+    Exit codes: 0 clean · 20 vulnerable · 21 malicious · 22 stale/partial · 23 no database
+
+    Examples:
+        venvy audit --refresh          # update the DB, then scan everything
+        venvy audit --json             # machine-readable, for CI / agents
+        venvy audit --env .venv        # a single environment
+    """
+    json_mode = _is_json_mode(ctx) or json_flag
+
+    from venvy.audit import report as audit_report
+    from venvy.audit.scanner import scan as run_scan
+    from venvy.audit.db import default_db_path, refresh_database
+
+    db_path = default_db_path()
+
+    # --- refresh (the only network step) ---------------------------------
+    if refresh:
+        try:
+            if json_mode or _is_quiet(ctx):
+                refresh_database(db_path)
+            else:
+                with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
+                              console=console) as progress:
+                    progress.add_task("Updating advisory database...", total=None)
+                    rep = refresh_database(db_path)
+                console.print(
+                    "[green]Advisory database updated[/green] — %s advisories "
+                    "(%s malicious)" % (rep.advisories, rep.malicious)
+                )
+        except Exception as exc:
+            if not db_path.exists():
+                # No usable DB and refresh failed: cannot honestly report anything.
+                _fail_audit(json_mode, ExitCode.AUDIT_DB_MISSING,
+                            "advisory database refresh failed and no local database "
+                            "exists: %s" % exc)
+            if not json_mode:
+                console.print("[yellow]refresh failed (%s); using existing database"
+                              "[/yellow]" % exc)
+
+    # --- database must exist ---------------------------------------------
+    if not db_path.exists():
+        _fail_audit(json_mode, ExitCode.AUDIT_DB_MISSING,
+                    "no advisory database found — run `venvy audit --refresh`")
+
+    # --- scan -------------------------------------------------------------
+    targets = [Path(p) for p in env_paths] if env_paths else None
+    result = run_scan(env_paths=targets, db_path=db_path, include_scan=scan)
+    exit_code = audit_report.decide_exit_code(result, include_toolchain)
+
+    if json_mode:
+        payload = audit_report.build_json(result, exit_code)
+        click.echo(json.dumps(payload, indent=2, default=str))
+        sys.exit(exit_code)
+
+    if result.stats.envs_scanned == 0 and not targets:
+        console.print("[dim]No environments found. Activate a venv to register it, "
+                      "or use `venvy audit --scan` to discover them on disk.[/dim]")
+    audit_report.render_human(result, console, include_toolchain)
+    sys.exit(exit_code)
+
+
+def _fail_audit(json_mode: bool, exit_code: int, message: str):
+    """Emit an audit error consistently in either output mode, then exit."""
+    if json_mode:
+        click.echo(json.dumps(
+            {"schema_version": 1, "exit_code": exit_code, "success": False,
+             "error": message}, indent=2))
+    else:
+        console.print("[red]%s[/red]" % message)
+    sys.exit(exit_code)
+
+
 if __name__ == '__main__':
     main()

@@ -76,12 +76,15 @@ def test_withdrawn_advisory_is_not_indexed(tmp_path):
         _osv("PYSEC-OLD", "requests",
              events=[{"introduced": "0"}, {"fixed": "9.9"}],
              withdrawn="2024-01-01T00:00:00Z"),
+        # a real advisory so the DB is usable (affected > 0)
+        _osv("PYSEC-OK", "flask", events=[{"introduced": "0"}, {"fixed": "2.0"}]),
     ]
     dbfile, report = _build(tmp_path, records)
-    assert report.advisories == 1          # recorded
-    assert report.affected_rows == 0       # but not indexed
+    assert report.advisories == 2          # both recorded
+    assert report.affected_rows == 1       # withdrawn one NOT indexed; flask is
     with AdvisoryDB(dbfile) as db:
-        assert db.advisories_for("requests") == []
+        assert db.advisories_for("requests") == []   # withdrawn -> never matched
+        assert db.advisories_for("flask")            # real one present
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +215,33 @@ def test_valid_but_empty_db_raises_no_false_all_clear(tmp_path):
     # let a scan report a vulnerable env as clean.
     dbfile = tmp_path / "audit" / "empty.sqlite"
     compile_database(dbfile, [])   # 0 advisories
+    with pytest.raises(AdvisoryDBError):
+        AdvisoryDB(dbfile)
+
+
+def test_advisories_but_zero_affected_raises(tmp_path):
+    # Gap 1a: advisories > 0 but 0 indexed affected rows (e.g. only withdrawn/non-PyPI
+    # advisories) would match nothing and report every package clean. Must fail on open.
+    import sqlite3
+    dbfile = tmp_path / "audit" / "noaff.sqlite"
+    # A lone withdrawn advisory -> advisory row created, no affected row indexed.
+    compile_database(dbfile, [_osv("PYSEC-W", "requests",
+                                   events=[{"introduced": "0"}],
+                                   withdrawn="2024-01-01T00:00:00Z")])
+    with sqlite3.connect(str(dbfile)) as c:
+        assert c.execute("SELECT count(*) FROM advisories").fetchone()[0] == 1
+        assert c.execute("SELECT count(*) FROM affected").fetchone()[0] == 0
+    with pytest.raises(AdvisoryDBError):
+        AdvisoryDB(dbfile)
+
+
+def test_missing_meta_table_raises_not_traceback(tmp_path):
+    # Gap 1b: a dropped meta table would crash mid-scan (every scan reads meta). Must
+    # be caught at open time as AdvisoryDBError, not surface as an uncaught traceback.
+    import sqlite3
+    dbfile = _good_db(tmp_path)
+    with sqlite3.connect(str(dbfile)) as c:
+        c.execute("DROP TABLE meta")
     with pytest.raises(AdvisoryDBError):
         AdvisoryDB(dbfile)
 

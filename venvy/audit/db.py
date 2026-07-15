@@ -252,17 +252,21 @@ def compile_database(
         conn.close()
 
     # Refuse to publish a degenerate database over an existing good one. This closes
-    # the "silent false all-clear" path: a refresh that yields 0 advisories must NOT
-    # replace a working DB with an empty one.
-    if report.advisories < min_advisories:
+    # the "silent false all-clear" path: a refresh that yields 0 advisories — or
+    # advisories with 0 indexed affected rows — must NOT replace a working DB.
+    degenerate = report.advisories < min_advisories or (
+        min_advisories > 0 and report.affected_rows == 0
+    )
+    if degenerate:
         try:
             os.remove(str(tmp_path))
         except OSError:
             pass
         raise ValueError(
-            "refusing to publish advisory database with %d advisories "
-            "(minimum %d); existing database left untouched"
-            % (report.advisories, min_advisories)
+            "refusing to publish degenerate advisory database "
+            "(advisories=%d, affected=%d, minimum advisories=%d); "
+            "existing database left untouched"
+            % (report.advisories, report.affected_rows, min_advisories)
         )
 
     # Atomic publish: fsync the temp file, then replace the live DB in one step.
@@ -422,19 +426,24 @@ class AdvisoryDB:
         """
         try:
             n_adv = self._conn.execute("SELECT count(*) FROM advisories").fetchone()[0]
-            # Ensure the table the scan actually queries exists and is readable.
-            self._conn.execute("SELECT 1 FROM affected LIMIT 1").fetchone()
+            # count(*) (not LIMIT 1): a DB with advisories but ZERO indexed affected
+            # rows would otherwise match nothing and report every package clean.
+            n_aff = self._conn.execute("SELECT count(*) FROM affected").fetchone()[0]
+            # Probe the meta table too — every scan reads it (staleness/provenance); a
+            # dropped/absent meta table must fail here, not as a traceback mid-scan.
+            self._conn.execute("SELECT 1 FROM meta LIMIT 1").fetchone()
         except sqlite3.DatabaseError as exc:
             self._conn.close()
             raise AdvisoryDBError(
                 "advisory database at %s is unreadable or corrupt (%s) — "
                 "run `venvy audit --refresh`" % (self.path, exc)
             )
-        if n_adv == 0:
+        if n_adv == 0 or n_aff == 0:
             self._conn.close()
             raise AdvisoryDBError(
-                "advisory database at %s is empty (0 advisories) — "
-                "run `venvy audit --refresh`" % self.path
+                "advisory database at %s has no usable advisories "
+                "(advisories=%d, affected=%d) — run `venvy audit --refresh`"
+                % (self.path, n_adv, n_aff)
             )
 
     # -- metadata / staleness -------------------------------------------------

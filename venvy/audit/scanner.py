@@ -331,13 +331,18 @@ def _run(db, inputs, global_errors, workers, start):
 
 
 def _db_meta(db: AdvisoryDB) -> dict:
+    import json
+
     age = db.age_days()
+    try:
+        provenance = json.loads(db.meta.get("sources") or "[]")
+    except (json.JSONDecodeError, TypeError):
+        provenance = []
     return {
         "built_at": db.meta.get("built_at"),
         "age_days": round(age, 3) if age is not None else None,
         "stale": db.is_stale(),
         "advisory_count": db.meta.get("advisory_count"),
         "malicious_count": db.meta.get("malicious_count"),
-        "source_url": db.meta.get("source_url"),
-        "source_sha256": db.meta.get("source_sha256"),
+        "sources": provenance,
     }

@@ -233,8 +233,10 @@ def render_human(result, console, include_toolchain: bool = False) -> None:
                     marker = "[yellow]*[/yellow]"
                 pkg = f.package + (" [dim](toolchain)[/dim]" if f.toolchain else "")
                 fix = ", ".join(f.fixed_versions[:2]) if f.fixed_versions else "[dim]-[/dim]"
-                table.add_row(marker, pkg, f.version, f.advisory_id,
-                              severity_label(f.severity), fix)
+                # A malicious package's "severity" is that it's malicious; a raw CVSS
+                # UNKNOWN there reads as a gap when it isn't one.
+                sev = "malicious" if f.kind == "malicious" else severity_label(f.severity)
+                table.add_row(marker, pkg, f.version, f.advisory_id, sev, fix)
             console.print(table)
 
         # Toolchain summary when not expanded.

@@ -236,6 +236,8 @@ def compile_database(
             "source_sha256": report.source_sha256 or "",
             "source_bytes": str(report.source_bytes),
         }
+        if source_meta and source_meta.get("sources"):
+            meta["sources"] = json.dumps(source_meta["sources"])
         cur.executemany(
             "INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)", list(meta.items())
         )
@@ -298,21 +300,55 @@ def iter_osv_from_zip(zip_path: Path) -> Iterator[dict]:
 def refresh_database(
     dest_path: Optional[Path] = None,
     url: str = DEFAULT_OSV_URL,
+    include_enrichment: bool = True,
 ) -> BuildReport:
-    """Download the OSV PyPI dump and rebuild the local snapshot atomically."""
+    """Rebuild the local snapshot atomically from OSV plus enrichment feeds.
+
+    OSV is required. The DataDog malicious dataset and the typosquat dataset are
+    best-effort: if either is unreachable, the build proceeds without it and records the
+    failure in the ``sources`` provenance, rather than failing the whole refresh.
+    """
+    import itertools
+
     dest_path = Path(dest_path) if dest_path else default_db_path()
     dest_path.parent.mkdir(parents=True, exist_ok=True)
+    now = _now().isoformat()
 
     with tempfile.TemporaryDirectory(prefix="venvy-osv-") as tmpdir:
         zip_path = Path(tmpdir) / "all.zip"
-        sha, nbytes = download_osv_zip(url, zip_path)
+        osv_sha, nbytes = download_osv_zip(url, zip_path)
+
+        record_streams = [iter_osv_from_zip(zip_path)]
+        sources = [{"name": "osv-pypi", "url": url, "sha256": osv_sha,
+                    "bytes": nbytes, "fetched_at": now}]
+
+        if include_enrichment:
+            from venvy.audit import sources as src
+
+            try:
+                manifest, dd_sha = src.fetch_datadog()
+                record_streams.append(src.datadog_to_osv(manifest))
+                sources.append({"name": "datadog-malicious", "url": src.DEFAULT_DATADOG_URL,
+                                "sha256": dd_sha, "fetched_at": now})
+            except Exception as exc:  # best-effort enrichment
+                sources.append({"name": "datadog-malicious", "error": str(exc)})
+
+            try:
+                csv_text, ts_sha = src.fetch_typosquats()
+                record_streams.append(src.typosquats_to_osv(csv_text))
+                sources.append({"name": "typosquat", "url": src.DEFAULT_TYPOSQUAT_URL,
+                                "sha256": ts_sha, "fetched_at": now})
+            except Exception as exc:
+                sources.append({"name": "typosquat", "error": str(exc)})
+
         source_meta = {
             "source_url": url,
-            "source_sha256": sha,
+            "source_sha256": osv_sha,
             "source_bytes": nbytes,
+            "sources": sources,
         }
         return compile_database(
-            dest_path, iter_osv_from_zip(zip_path), source_meta=source_meta
+            dest_path, itertools.chain(*record_streams), source_meta=source_meta
         )
 
 

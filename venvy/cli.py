@@ -1949,20 +1949,25 @@ def status(ctx, env_path):
               help='Also discover unregistered environments on disk')
 @click.option('--include-toolchain', is_flag=True,
               help='Include pip/setuptools/wheel in findings and the exit code')
+@click.option('--offline', is_flag=True,
+              help='Never access the network; fail if no usable local database exists')
 @click.pass_context
-def audit(ctx, json_flag, refresh, env_paths, scan, include_toolchain):
+def audit(ctx, json_flag, refresh, env_paths, scan, include_toolchain, offline):
     """Audit environments for known-vulnerable and malicious packages.
 
-    Scans every registered environment (or those given with --env) against a local,
-    offline advisory database compiled from OSV. Application-dependency findings drive
-    the exit code; pip/setuptools/wheel are reported but excluded from the gate unless
-    --include-toolchain is passed.
+    Scans every registered environment (or those given with --env) against a local
+    advisory database compiled from OSV. On the FIRST run, if no database exists, one
+    is downloaded automatically (one-time, ~30MB); every scan after that is fully
+    offline. Application-dependency findings drive the exit code; pip/setuptools/wheel
+    are reported but excluded from the gate unless --include-toolchain is passed.
 
     Exit codes: 0 clean · 20 vulnerable · 21 malicious · 22 stale/partial · 23 no database
 
     Examples:
-        venvy audit --refresh          # update the DB, then scan everything
+        venvy audit                    # scans everything; auto-fetches the DB on first run
+        venvy audit --refresh          # update the DB first, then scan
         venvy audit --json             # machine-readable, for CI / agents
+        venvy audit --offline          # never touch the network; fail if no local DB
         venvy audit --env .venv        # a single environment
     """
     json_mode = _is_json_mode(ctx) or json_flag
@@ -1973,18 +1978,22 @@ def audit(ctx, json_flag, refresh, env_paths, scan, include_toolchain):
 
     db_path = default_db_path()
 
-    # --- refresh (the only network step) ---------------------------------
+    if refresh and offline:
+        _fail_audit(json_mode, ExitCode.GENERAL_ERROR,
+                    "--refresh and --offline are mutually exclusive")
+
+    # --- refresh (explicit network update) -------------------------------
     if refresh:
         try:
             if json_mode or _is_quiet(ctx):
                 refresh_database(db_path)
             else:
-                with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
-                              console=console) as progress:
-                    progress.add_task("Updating advisory database...", total=None)
-                    rep = refresh_database(db_path)
+                # Plain status lines (no animated spinner: its Braille glyphs crash the
+                # Windows legacy console's cp1252 encoder).
+                console.print("[dim]Updating advisory database...[/dim]")
+                rep = refresh_database(db_path)
                 console.print(
-                    "[green]Advisory database updated[/green] — %s advisories "
+                    "[green]Advisory database updated[/green] - %s advisories "
                     "(%s malicious)" % (rep.advisories, rep.malicious)
                 )
         except Exception as exc:
@@ -1997,15 +2006,31 @@ def audit(ctx, json_flag, refresh, env_paths, scan, include_toolchain):
                 console.print("[yellow]refresh failed (%s); using existing database"
                               "[/yellow]" % exc)
 
-    # --- scan -------------------------------------------------------------
-    # AdvisoryDB validates on open: a missing, corrupt, or EMPTY database raises
-    # AdvisoryDBError, which we map to a clean exit 23 (never a traceback, never a
-    # silent "clean" from an empty DB) in both human and JSON mode.
+    # --- scan (auto-bootstrap the DB on first run) -----------------------
+    # AdvisoryDB validates on open: a missing/corrupt/empty database raises
+    # AdvisoryDBError. On first run (or to recover a corrupt DB) we auto-fetch a
+    # one-time copy and retry — UNLESS --offline, or a refresh was already attempted.
+    # If it still fails we map to a clean exit 23: never a traceback, never a silent
+    # clean from an empty DB, in both human and JSON mode.
     targets = [Path(p) for p in env_paths] if env_paths else None
+
+    def _do_scan():
+        return run_scan(env_paths=targets, db_path=db_path, include_scan=scan)
+
     try:
-        result = run_scan(env_paths=targets, db_path=db_path, include_scan=scan)
+        result = _do_scan()
     except AdvisoryDBError as exc:
-        _fail_audit(json_mode, ExitCode.AUDIT_DB_MISSING, str(exc))
+        if offline or refresh:
+            _fail_audit(json_mode, ExitCode.AUDIT_DB_MISSING, str(exc))
+        try:
+            _bootstrap_db(db_path, json_mode, ctx)
+            result = _do_scan()
+        except AdvisoryDBError as exc2:
+            _fail_audit(json_mode, ExitCode.AUDIT_DB_MISSING, str(exc2))
+        except Exception as exc2:  # network / build failure during bootstrap
+            _fail_audit(json_mode, ExitCode.AUDIT_DB_MISSING,
+                        "could not obtain an advisory database: %s - "
+                        "check your connection or run `venvy audit --refresh`" % exc2)
     exit_code = audit_report.decide_exit_code(result, include_toolchain)
 
     if json_mode:
@@ -2029,6 +2054,31 @@ def _fail_audit(json_mode: bool, exit_code: int, message: str):
     else:
         console.print("[red]%s[/red]" % message)
     sys.exit(exit_code)
+
+
+def _bootstrap_db(db_path, json_mode: bool, ctx):
+    """First-run: download a one-time advisory database, then let the caller retry.
+
+    In JSON mode the human notice goes to STDERR so STDOUT stays valid JSON. Raises on
+    network/build failure — the caller maps that to a clean exit 23.
+    """
+    from venvy.audit.db import refresh_database
+
+    if json_mode:
+        click.echo("venvy: no advisory database found; downloading a one-time copy "
+                   "(~30MB)...", err=True)
+        refresh_database(db_path)
+        return
+    if _is_quiet(ctx):
+        refresh_database(db_path)
+        return
+    # Plain status lines (no animated spinner: its Braille glyphs crash the Windows
+    # legacy console's cp1252 encoder).
+    console.print("[dim]No advisory database found - downloading a one-time copy "
+                  "(~30MB). Future scans are fully offline.[/dim]")
+    rep = refresh_database(db_path)
+    console.print("[green]Advisory database ready[/green] - %s advisories "
+                  "(%s malicious)" % (rep.advisories, rep.malicious))
 
 
 if __name__ == '__main__':

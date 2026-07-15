@@ -401,7 +401,7 @@ class AdvisoryDB:
         self.path = Path(path) if path else default_db_path()
         if not self.path.exists():
             raise AdvisoryDBError(
-                "advisory database not found at %s — run `venvy audit --refresh`"
+                "advisory database not found at %s - run `venvy audit --refresh`"
                 % self.path
             )
         # Read-only URI connection so a scan can never mutate ground truth.
@@ -435,14 +435,14 @@ class AdvisoryDB:
         except sqlite3.DatabaseError as exc:
             self._conn.close()
             raise AdvisoryDBError(
-                "advisory database at %s is unreadable or corrupt (%s) — "
+                "advisory database at %s is unreadable or corrupt (%s) - "
                 "run `venvy audit --refresh`" % (self.path, exc)
             )
         if n_adv == 0 or n_aff == 0:
             self._conn.close()
             raise AdvisoryDBError(
                 "advisory database at %s has no usable advisories "
-                "(advisories=%d, affected=%d) — run `venvy audit --refresh`"
+                "(advisories=%d, affected=%d) - run `venvy audit --refresh`"
                 % (self.path, n_adv, n_aff)
             )
 

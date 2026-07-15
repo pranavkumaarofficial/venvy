@@ -178,14 +178,7 @@ Desktop.ini
 
 # Test files and artifacts
 test_basic.py
-about_project.md
-buildable_features.md
-claude_analysis.md
-notes.md
-new analysis.md
-new plan.md
 
-# NL-CLI related docs (moved to nlcli-wizard repo)
-IMPLEMENTATION_PLAN_NL_CLI.md
-TECHNICAL_ANALYSIS_NL_CLI.md
-VENVY_AUDIT_REPORT.md
+# Internal planning / strategy / architecture docs — kept local, never published
+ideas/
+skills/

@@ -1,12 +1,23 @@
 """
-venvy - Agent-Safe Python Virtual Environment Manager
+venvy - Offline Python supply-chain security audit + agent-safe environment manager.
 
-A cross-platform tool for tracking, creating, and managing Python virtual
-environments. Designed as the environment layer for AI coding agents with
-structured JSON output, checkpoint/rollback, and local AI error analysis.
+Scan every virtual environment for known-vulnerable and malicious packages, fully
+offline, with structured JSON output and semantic exit codes for CI and AI agents.
+Also provides a lightweight environment registry with checkpoint/rollback.
 """
 
-__version__ = "0.4.0"
+# Single source of truth for the version is the installed package metadata, so
+# `venvy --version` can never drift from what pip installed. The fallback is only
+# used when running from a source tree that has not been pip-installed.
+try:
+    from importlib.metadata import version as _pkg_version, PackageNotFoundError
+    try:
+        __version__ = _pkg_version("venvy")
+    except PackageNotFoundError:
+        __version__ = "0.5.1"
+except ImportError:  # pragma: no cover - importlib.metadata is stdlib on 3.8+
+    __version__ = "0.5.1"
+
 __author__ = "Pranav Kumaar"
 
 from venvy.discovery import EnvironmentDiscovery

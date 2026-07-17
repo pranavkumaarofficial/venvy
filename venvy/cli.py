@@ -72,7 +72,40 @@ def _auto_detect_env() -> Optional[Path]:
     return None
 
 
-@click.group()
+def _enable_json_flag(ctx, param, value):
+    """Callback for the injected per-command --json: set JSON mode on the shared context.
+
+    Lets `--json` be passed AFTER any subcommand (e.g. `venvy ls --json`), not only
+    before it (`venvy --json ls`). This is the form users and agents naturally type,
+    and the form venvy's own generated CLAUDE.md emits. `--json` implies --yes/--quiet,
+    matching the group-level flag.
+    """
+    if value:
+        ctx.ensure_object(dict)
+        ctx.obj['json_output'] = True
+        ctx.obj['yes'] = True
+        ctx.obj['quiet'] = True
+    return value
+
+
+class VenvyGroup(click.Group):
+    """Group that injects a `--json` flag into every subcommand that lacks its own.
+
+    Keeps `--json` position-independent across the whole CLI with no per-command edits
+    and no change to command signatures (the injected option uses expose_value=False).
+    """
+
+    def add_command(self, cmd, name=None):
+        existing = {opt for param in cmd.params for opt in getattr(param, "opts", [])}
+        if "--json" not in existing:
+            cmd.params.append(click.Option(
+                ["--json"], is_flag=True, expose_value=False, is_eager=True,
+                callback=_enable_json_flag, help="Output as JSON (agent/CI friendly)",
+            ))
+        super().add_command(cmd, name)
+
+
+@click.group(cls=VenvyGroup)
 @click.version_option(version=__version__, prog_name="venvy")
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose output')
 @click.option('--json', 'json_output', is_flag=True, help='Output as JSON (implies --yes)')

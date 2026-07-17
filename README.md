@@ -2,7 +2,7 @@
 
 **venvy** scans **every Python virtual environment on your machine** for **known-vulnerable and malicious packages** — fully **offline**, deterministic, and in a form your **CI pipelines and AI coding agents** can trust. It also doubles as a lightweight virtual-environment manager (registry, checkpoints, safe installs).
 
-[![PyPI version](https://img.shields.io/pypi/v/venvy.svg)](https://pypi.org/project/venvy/)
+[![PyPI version](https://img.shields.io/pypi/v/venvy.svg)](https://pypi.org/project/venvy/) 
 [![Python versions](https://img.shields.io/pypi/pyversions/venvy.svg)](https://pypi.org/project/venvy/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Scan: offline](https://img.shields.io/badge/scan-100%25%20offline-brightgreen.svg)](#how-it-works)

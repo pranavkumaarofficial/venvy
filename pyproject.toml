@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "venvy"
 version = "0.6.0"
-description = "Offline, machine-wide Python supply-chain security audit (vulnerable + malicious packages) plus disk-space deduplication across virtual environments"
+description = "Offline, machine-wide Python supply-chain security audit: scan every virtual environment for known-vulnerable and malicious packages"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [

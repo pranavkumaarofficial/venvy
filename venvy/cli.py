@@ -1926,6 +1926,120 @@ def audit(ctx, json_flag, refresh, env_paths, scan, include_toolchain, offline):
     sys.exit(exit_code)
 
 
+@main.command()
+@click.option('--apply', 'do_apply', is_flag=True,
+              help='Actually deduplicate (default is a read-only dry run)')
+@click.option('--env', 'env_paths', type=click.Path(path_type=Path), multiple=True,
+              help='Deduplicate specific environments (repeatable). Default: all known envs')
+@click.option('--min-size', type=int, default=None,
+              help='Ignore files smaller than this many bytes (default: 4096)')
+@click.option('--top', type=int, default=10, help='How many largest groups to list')
+@click.pass_context
+def dedup(ctx, do_apply, env_paths, min_size, top):
+    """Reclaim disk space by hardlinking identical files across environments.
+
+    Every environment installs its own byte-for-byte copy of the same wheels. This
+    finds files that are provably identical across your environments and makes them
+    share storage. Nothing is deleted and every environment keeps working.
+
+    Read-only by default: run it bare to see what could be reclaimed, then --apply.
+
+    Examples:
+        venvy dedup                    # dry run: what would be reclaimed
+        venvy dedup --apply            # collapse duplicates into hardlinks
+        venvy dedup --env .venv --json # machine-readable, single environment
+    """
+    from venvy.dedup import (
+        DEFAULT_MIN_SIZE, apply_dedup, enumerate_environments, find_duplicates,
+    )
+
+    json_mode = _is_json_mode(ctx)
+    auto_yes = _is_auto_yes(ctx)
+    threshold = DEFAULT_MIN_SIZE if min_size is None else min_size
+
+    targets = [Path(p) for p in env_paths] if env_paths else None
+    envs, enum_errors = enumerate_environments(targets)
+
+    if not envs:
+        msg = ("no environments found - activate a venv to register it, "
+               "or pass --env <path>")
+        if json_mode:
+            _output_result({"error": msg, "environments": 0}, ExitCode.ENV_NOT_FOUND)
+        console.print("[yellow]%s[/yellow]" % msg)
+        sys.exit(ExitCode.ENV_NOT_FOUND)
+
+    if not json_mode and not _is_quiet(ctx):
+        console.print("[dim]Scanning %d environment(s) for duplicate files...[/dim]"
+                      % len(envs))
+    report = find_duplicates(envs, min_size=threshold)
+    report.errors.extend(enum_errors)
+
+    # --- apply ------------------------------------------------------------
+    if do_apply and report.reclaimable_bytes > 0:
+        if not auto_yes and not json_mode:
+            console.print("This will replace %d duplicate file(s) with hardlinks, "
+                          "reclaiming %s." % (
+                              sum(len(g.paths) - 1 for g in report.groups),
+                              human_readable_size(report.reclaimable_bytes)))
+            if not Confirm.ask("Proceed?"):
+                console.print("Cancelled")
+                return
+        report = apply_dedup(report, min_size=threshold)
+
+    # --- output -----------------------------------------------------------
+    if json_mode:
+        _output_result({
+            "applied": report.applied,
+            "environments_scanned": report.envs_scanned,
+            "files_scanned": report.files_scanned,
+            "duplicate_groups": len(report.groups),
+            "reclaimable_bytes": report.reclaimable_bytes,
+            "already_shared_bytes": report.already_shared_bytes,
+            "linked_files": report.linked_files,
+            "reclaimed_bytes": report.reclaimed_bytes,
+            "duration_ms": report.duration_ms,
+            "errors": report.errors,
+            "largest": [
+                {"size": g.size, "copies": g.inodes,
+                 "reclaimable": g.reclaimable, "example": g.paths[0]}
+                for g in report.groups[:top]
+            ],
+        })
+
+    if report.applied:
+        console.print("[green]Reclaimed %s[/green] by hardlinking %d file(s) across "
+                      "%d environment(s)." % (human_readable_size(report.reclaimed_bytes),
+                                              report.linked_files, report.envs_scanned))
+    elif report.reclaimable_bytes == 0:
+        console.print("[green]Nothing to reclaim[/green] - scanned %d file(s) across "
+                      "%d environment(s)." % (report.files_scanned, report.envs_scanned))
+    else:
+        console.print("[bold]%s reclaimable[/bold] across %d environment(s) "
+                      "(%d duplicate group(s), %d files scanned in %dms)"
+                      % (human_readable_size(report.reclaimable_bytes),
+                         report.envs_scanned, len(report.groups),
+                         report.files_scanned, report.duration_ms))
+        if report.groups:
+            table = Table(show_header=True, header_style="bold", box=None, pad_edge=False)
+            table.add_column("reclaimable")
+            table.add_column("size")
+            table.add_column("copies")
+            table.add_column("file")
+            for g in report.groups[:top]:
+                table.add_row(human_readable_size(g.reclaimable),
+                              human_readable_size(g.size), str(g.inodes),
+                              Path(g.paths[0]).name)
+            console.print(table)
+        console.print("[dim]Run `venvy dedup --apply` to reclaim it. "
+                      "Nothing is deleted - duplicates become hardlinks.[/dim]")
+
+    if report.already_shared_bytes:
+        console.print("[dim]%s is already shared via existing hardlinks.[/dim]"
+                      % human_readable_size(report.already_shared_bytes))
+    for err in report.errors[:5]:
+        console.print("[yellow]note:[/yellow] %s" % err)
+
+
 def _fail_audit(json_mode: bool, exit_code: int, message: str):
     """Emit an audit error consistently in either output mode, then exit."""
     if json_mode:

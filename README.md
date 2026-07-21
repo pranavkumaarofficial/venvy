@@ -3,6 +3,7 @@
 **venvy** scans **every Python virtual environment on your machine** for **known-vulnerable and malicious packages** — fully **offline**, deterministic, and in a form your **CI pipelines and AI coding agents** can trust. It also doubles as a lightweight virtual-environment manager (registry, checkpoints, safe installs).
 
 [![PyPI version](https://img.shields.io/pypi/v/venvy.svg)](https://pypi.org/project/venvy/) 
+[![Tests](https://github.com/pranavkumaarofficial/venvy/actions/workflows/tests.yml/badge.svg)](https://github.com/pranavkumaarofficial/venvy/actions/workflows/tests.yml)
 [![Python versions](https://img.shields.io/pypi/pyversions/venvy.svg)](https://pypi.org/project/venvy/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Scan: offline](https://img.shields.io/badge/scan-100%25%20offline-brightgreen.svg)](#how-it-works)
@@ -66,7 +67,7 @@ Most Python security scanners audit **one project at a time**, need the **networ
 pip install venvy
 ```
 
-Requires **Python 3.8+**. Works on **Windows, macOS, and Linux**. No compiler, no heavyweight dependencies.
+Requires **Python 3.8+**. Works on **Windows, macOS, and Linux** — the full test suite runs on all three across Python 3.8–3.13 in [CI](https://github.com/pranavkumaarofficial/venvy/actions/workflows/tests.yml) on every commit. No compiler, no heavyweight dependencies.
 
 ---
 
@@ -253,9 +254,19 @@ It audits the `pip`-installed packages inside any environment (including Conda e
 
 ## Coverage & limitations
 
-- Detection is only as complete as its public data feeds (OSV + DataDog + typosquat lists). venvy **does not claim** to know every vulnerable or malicious package.
-- The malicious-package feeds catch confirmed, published bad actors; brand-new or already-yanked packages may not appear.
-- Advisory data ages between refreshes. venvy surfaces the database age on every run and downgrades the exit code when the database is stale.
+venvy is deliberately honest about what it does **not** cover. Each known gap is tracked as an open issue — **contributions welcome**, see [all open issues](https://github.com/pranavkumaarofficial/venvy/issues).
+
+| Limitation | Detail | Issue |
+|---|---|---|
+| **Malicious coverage is partial** | Detection is only as complete as its public feeds (~13k malicious records). Some well-known historical typosquats (`python3-dateutil`, `jeIlyfish`, `colourama`) are **not** currently flagged. | [#3](https://github.com/pranavkumaarofficial/venvy/issues/3) |
+| **`--scan` is slow** | Full-disk discovery of unregistered environments can take >2 minutes with no progress output. The default `venvy audit` path is fast. | [#4](https://github.com/pranavkumaarofficial/venvy/issues/4) |
+| **Conda-channel packages not audited** | Only `pip`-installed packages inside an environment are scanned (including inside Conda envs). `conda-meta` packages are out of scope. | [#5](https://github.com/pranavkumaarofficial/venvy/issues/5) |
+| **Scale unbenchmarked** | The dedup optimization is proven at small scale but not yet measured at 50–100 environments. | [#6](https://github.com/pranavkumaarofficial/venvy/issues/6) |
+
+Also worth knowing:
+- **No scanner catches a novel supply-chain 0-day.** venvy matches against *known* advisories. Pair it with dependency cooldowns and least-privilege dev environments.
+- **Advisory data ages between refreshes.** venvy prints the database age on every run and degrades the exit code when it is stale, rather than silently presenting old data as current.
+- **Brand-new or already-yanked malicious packages** may not appear in the feeds yet.
 
 ---
 
@@ -270,6 +281,15 @@ venvy audit       # try it locally
 ```
 
 Issues and pull requests are welcome. If you find a false positive or a false negative in the matcher, please open an issue with the package, version, and advisory ID — those become permanent regression tests.
+
+**Looking for something to work on?** The known gaps in [Coverage & limitations](#coverage--limitations) are filed as issues tagged `help wanted` — each one includes the context, the proposed approach, and exactly which files to start in:
+
+- [#3 Expand malicious-package coverage](https://github.com/pranavkumaarofficial/venvy/issues/3) — highest impact
+- [#4 Speed up `--scan` discovery](https://github.com/pranavkumaarofficial/venvy/issues/4)
+- [#5 Audit Conda-channel packages](https://github.com/pranavkumaarofficial/venvy/issues/5)
+- [#6 Benchmark at 50–100 environments](https://github.com/pranavkumaarofficial/venvy/issues/6)
+
+CI runs the full suite on Windows, macOS, and Linux across Python 3.8–3.13 for every push and PR.
 
 ---
 

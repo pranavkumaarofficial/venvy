@@ -137,11 +137,13 @@ def test_audit_autofetch_on_first_run(tmp_path, monkeypatch):
     monkeypatch.setattr(audit_db, "refresh_database", fake_refresh)
 
     env = _env(tmp_path, "proj", ["requests-2.19.0.dist-info"])
-    # mix_stderr=False so the first-run notice (stderr) doesn't corrupt the JSON stdout.
-    result = CliRunner(mix_stderr=False).invoke(main, ["audit", "--json", "--env", str(env)])
+    result = CliRunner().invoke(main, ["audit", "--json", "--env", str(env)])
     assert calls["n"] == 1                          # auto-fetched exactly once
     assert result.exit_code == 20                   # then found the vulnerability
-    payload = json.loads(result.output)
+    # The first-run notice goes to stderr. Click <8.2 mixes stderr into output by
+    # default while 8.2+ separates it (and dropped mix_stderr entirely), so extract
+    # the JSON document rather than depending on either behavior.
+    payload = json.loads(result.output[result.output.index("{"):])
     assert payload["environments"][0]["findings"][0]["advisory_id"] == "PYSEC-REQ"
 
 

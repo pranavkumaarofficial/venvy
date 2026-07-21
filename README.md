@@ -1,6 +1,6 @@
 # venvy — Offline Python Supply-Chain Security Audit for Every Virtual Environment
 
-**venvy** scans **every Python virtual environment on your machine** for **known-vulnerable and malicious packages** — fully **offline**, deterministic, and in a form your **CI pipelines and AI coding agents** can trust. It also doubles as a lightweight virtual-environment manager (registry, checkpoints, safe installs).
+**venvy** knows where **every Python virtual environment on your machine** is — then it **audits them for known-vulnerable and malicious packages** (fully **offline**, deterministic, CI- and AI-agent-ready) and **reclaims the disk space they waste** by deduplicating identical files. It also doubles as a lightweight environment manager (registry, checkpoints, safe installs).
 
 [![PyPI version](https://img.shields.io/pypi/v/venvy.svg)](https://pypi.org/project/venvy/) 
 [![Tests](https://github.com/pranavkumaarofficial/venvy/actions/workflows/tests.yml/badge.svg)](https://github.com/pranavkumaarofficial/venvy/actions/workflows/tests.yml)
@@ -10,7 +10,7 @@
 [![Detects: CVEs + malicious](https://img.shields.io/badge/detects-CVEs%20%2B%20malicious-critical.svg)](#what-venvy-detects)
 [![Agent & CI ready](https://img.shields.io/badge/output-JSON%20%2B%20exit%20codes-informational.svg)](#json-output-for-ci--ai-agents)
 
-> **Keywords:** python security audit · vulnerable package scanner · malicious PyPI package detection · offline CVE scanner · supply-chain security · typosquatting detection · pip-audit alternative · virtual environment manager · OSV database · CI dependency scanning.
+> **Keywords:** python security audit · vulnerable package scanner · malicious PyPI package detection · offline CVE scanner · supply-chain security · typosquatting detection · pip-audit alternative · virtual environment manager · OSV database · CI dependency scanning · venv disk space · deduplicate virtual environments · hardlink dedup · reclaim disk space python.
 
 ---
 
@@ -18,6 +18,7 @@
 
 - [Why venvy](#why-venvy)
 - [What venvy detects](#what-venvy-detects)
+- [Reclaim disk space](#reclaim-disk-space)
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Command reference](#command-reference)
@@ -58,6 +59,43 @@ Most Python security scanners audit **one project at a time**, need the **networ
 | **Unknown** | An advisory exists but cannot be version-scoped — surfaced, never silently cleared | reported as `unknown` |
 
 **Correctness-first by design:** anything that cannot be confidently evaluated is reported as `unknown`, never as "safe." A false "you're clean" is treated as a critical bug.
+
+---
+
+## Reclaim disk space
+
+Every virtual environment stores its **own byte-for-byte copy** of the same wheels. Ten environments with `numpy` store `numpy` ten times. AI coding agents make this dramatically worse — every throwaway project spawns another environment full of the same libraries.
+
+`venvy dedup` finds files that are **provably identical** across your environments and collapses them onto one inode using hardlinks. **Nothing is deleted. Every environment keeps working.**
+
+```bash
+venvy dedup            # read-only: show what could be reclaimed
+venvy dedup --apply    # collapse duplicates into hardlinks
+venvy dedup --json     # machine-readable
+```
+
+```text
+18.2 MB reclaimable across 3 environment(s) (659 duplicate group(s), 1879 files scanned)
+reclaimable  size      copies  file
+1.1 MB       226.6 KB  6       pyparsing.py
+410.8 KB     136.9 KB  4       _emoji_codes.py
+320.0 KB     64.0 KB   6       cli-32.exe
+```
+
+That's a **real measurement on three small environments** — roughly a quarter of their total size. It also catches *intra*-environment waste (pip and setuptools each vendor their own copy of `pyparsing`). Machines with several ML environments have far more to gain, since every copy of a large wheel collapses to one.
+
+**How it stays safe** — a dedup tool that corrupts an environment is worse than no dedup tool:
+
+| Rule | Why |
+|---|---|
+| Never `.pyc` / `__pycache__` | CPython rewrites bytecode **in place**; an in-place write through a shared inode would corrupt every other environment |
+| Byte-identity verified by **hash** | Never inferred from size or mtime, and re-verified immediately before linking |
+| Changed-since-scan files are skipped | Reported, never clobbered |
+| Same filesystem only | Hardlinks cannot cross devices |
+| Atomic swap | Links to a temp name then `os.replace`, so the file is never absent even mid-crash |
+| Read-only by default | Nothing changes until you pass `--apply` |
+
+Verified end-to-end on real environments: 8.9 MB reclaimed across 374 files, both environments still importing and running `pip` afterwards, with every unlinked file accounted for.
 
 ---
 
@@ -123,6 +161,16 @@ advisory database: 0.1 days old
 | `venvy audit --include-toolchain` | Include `pip`/`setuptools`/`wheel` in findings and the exit code |
 
 **Toolchain handling:** `pip`, `setuptools`, and `wheel` ship in nearly every venv and carry many advisories. They are always *reported* but excluded from the exit-code gate by default, so a stale bundled `pip` never buries a real application-dependency finding. Use `--include-toolchain` to gate on them too.
+
+### Disk-space reclamation
+
+| Command | Description |
+|---|---|
+| `venvy dedup` | Read-only: report space reclaimable by deduplicating identical files |
+| `venvy dedup --apply` | Collapse duplicates into hardlinks (nothing is deleted) |
+| `venvy dedup --env <path>` | Limit to specific environments (repeatable) |
+| `venvy dedup --min-size <bytes>` | Ignore files below this size (default 4096) |
+| `venvy dedup --json` | Machine-readable report |
 
 ### Environment management
 

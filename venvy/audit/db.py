@@ -17,9 +17,11 @@ Design points:
 """
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import tempfile
 import zipfile
@@ -165,11 +167,17 @@ def compile_database(
         report.source_sha256 = source_meta.get("source_sha256")
         report.source_bytes = source_meta.get("source_bytes", 0)
 
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=dest_path.name + ".tmp-", dir=str(dest_path.parent)
-    )
-    os.close(fd)
-    tmp_path = Path(tmp_name)
+    # Deterministic temp path in the destination directory (same filesystem, so the
+    # publish is a real rename). We deliberately do NOT use tempfile.mkstemp here: it
+    # opens an extra OS handle on the file, and on Windows any lingering handle makes
+    # the later os.replace fail with WinError 32. Letting sqlite create the file means
+    # exactly one writer.
+    tmp_path = dest_path.with_name("%s.tmp-%d" % (dest_path.name, os.getpid()))
+    if tmp_path.exists():
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
 
     conn = sqlite3.connect(str(tmp_path))
     try:
@@ -249,7 +257,13 @@ def compile_database(
         )
         conn.commit()
     finally:
+        cur = None
         conn.close()
+        del conn
+        # Windows only releases the file once every sqlite object is finalized; a
+        # lingering cursor/connection reference otherwise keeps the handle open and
+        # makes the atomic publish below fail with WinError 32.
+        gc.collect()
 
     # Refuse to publish a degenerate database over an existing good one. This closes
     # the "silent false all-clear" path: a refresh that yields 0 advisories — or
@@ -537,14 +551,19 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _atomic_replace(src: Path, dest: Path, attempts: int = 6, delay: float = 0.1) -> None:
-    """os.replace with a short backoff retry.
+def _atomic_replace(src: Path, dest: Path, attempts: int = 10, delay: float = 0.1) -> None:
+    """Publish ``src`` as ``dest``, tolerating Windows file locks.
 
-    On Windows a freshly written file can be transiently locked by an antivirus
-    scanner or the search indexer, making os.replace fail with PermissionError
-    (WinError 32, "used by another process"). That would abort an otherwise-good
-    `venvy audit --refresh`. POSIX never hits this, so the retry is a no-op there.
-    Still atomic: os.replace either swaps the file or leaves the original untouched.
+    os.replace is the fast path and is genuinely atomic. On Windows it can fail with
+    PermissionError (WinError 32, "used by another process") when an antivirus scanner,
+    the search indexer, or a not-yet-finalized sqlite handle still holds the file —
+    which would abort an otherwise-successful `venvy audit --refresh`.
+
+    Strategy: retry the rename with a growing backoff (~5.5s total), then fall back to
+    copying the bytes over the destination. The fallback is not atomic, but it only runs
+    after the rename has repeatedly failed, and a readable-but-briefly-inconsistent
+    database is still caught by AdvisoryDB's validate-on-open (fail closed, exit 23) —
+    never a silent wrong answer. POSIX takes the first attempt every time.
     """
     import time
 
@@ -556,7 +575,16 @@ def _atomic_replace(src: Path, dest: Path, attempts: int = 6, delay: float = 0.1
         except PermissionError as exc:  # Windows transient lock
             last_error = exc
             time.sleep(delay * (attempt + 1))
-    raise last_error
+
+    # Fallback: copy contents, then best-effort remove the temp file.
+    try:
+        shutil.copyfile(str(src), str(dest))
+    except OSError:
+        raise last_error
+    try:
+        os.remove(str(src))
+    except OSError:
+        pass
 
 
 def _fsync_file(path: Path) -> None:

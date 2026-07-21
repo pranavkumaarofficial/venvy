@@ -158,6 +158,33 @@ def test_audit_offline_no_db_exit_23_no_network(tmp_path, monkeypatch):
     assert json.loads(result.output)["success"] is False
 
 
+def test_audit_first_run_falls_back_to_current_dir_env(tmp_path, monkeypatch):
+    """A fresh install has an empty registry; `venvy audit` must still find the venv
+    in the current directory instead of reporting nothing at all."""
+    from unittest.mock import MagicMock
+
+    dbfile = tmp_path / "audit" / "osv.sqlite"
+    compile_database(dbfile, [_osv("PYSEC-REQ", "requests",
+                                   events=[{"introduced": "0"}, {"fixed": "2.20"}])])
+    monkeypatch.setattr(audit_db, "default_db_path", lambda: dbfile)
+
+    # Registry knows about nothing (fresh install).
+    fake_registry = MagicMock()
+    fake_registry.return_value.list_all.return_value = []
+    monkeypatch.setattr("venvy.registry.VenvRegistry", fake_registry)
+
+    # A vulnerable environment sits in the current directory.
+    _env(tmp_path, ".venv", ["requests-2.19.0.dist-info"])
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(main, ["audit", "--json"])   # no --env, no --scan
+    assert result.exit_code == 20, result.output
+    payload = json.loads(result.output)
+    assert payload["summary"]["envs_scanned"] == 1
+    assert payload["environments"][0]["findings"][0]["advisory_id"] == "PYSEC-REQ"
+
+
 def test_audit_refresh_and_offline_conflict(tmp_path, monkeypatch):
     dbfile = tmp_path / "audit" / "osv.sqlite"
     monkeypatch.setattr(audit_db, "default_db_path", lambda: dbfile)

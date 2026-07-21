@@ -1896,6 +1896,18 @@ def audit(ctx, json_flag, refresh, env_paths, scan, include_toolchain, offline):
             _fail_audit(json_mode, ExitCode.AUDIT_DB_MISSING,
                         "could not obtain an advisory database: %s - "
                         "check your connection or run `venvy audit --refresh`" % exc2)
+
+    # First-run fallback: a fresh install has an empty registry, which would make the
+    # headline command report nothing at all. Fall back to the environment in the
+    # current directory (VIRTUAL_ENV / .venv / venv) so `venvy audit` is useful
+    # immediately after `pip install venvy`.
+    auto_detected = None
+    if result.stats.envs_scanned == 0 and not targets and not scan:
+        auto_detected = _auto_detect_env()
+        if auto_detected:
+            targets = [auto_detected]
+            result = _do_scan()
+
     exit_code = audit_report.decide_exit_code(result, include_toolchain)
 
     if json_mode:
@@ -1903,7 +1915,11 @@ def audit(ctx, json_flag, refresh, env_paths, scan, include_toolchain, offline):
         click.echo(json.dumps(payload, indent=2, default=str))
         sys.exit(exit_code)
 
-    if result.stats.envs_scanned == 0 and not targets:
+    if auto_detected:
+        console.print("[dim]No registered environments yet - auditing %s from the "
+                      "current directory. Run `venvy audit --scan` to find others.[/dim]"
+                      % auto_detected)
+    elif result.stats.envs_scanned == 0 and not targets:
         console.print("[dim]No environments found. Activate a venv to register it, "
                       "or use `venvy audit --scan` to discover them on disk.[/dim]")
     audit_report.render_human(result, console, include_toolchain)

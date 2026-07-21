@@ -1,0 +1,59 @@
+name: Tests
+
+# Validates the cross-platform + Python-version support venvy advertises.
+# Runs the full suite on every push/PR so regressions never reach a release.
+on:
+  push:
+    branches: [main, supply-chain-audit]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} · py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
+        exclude:
+          # Python 3.8 is not provided for the arm64 macOS runners.
+          - os: macos-latest
+            python-version: "3.8"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package and dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run test suite
+        run: pytest -q
+
+      - name: Smoke-test the CLI
+        shell: bash
+        run: |
+          set -e
+          # --version must match the installed distribution (regression: 0.4.0 drift)
+          venvy --version
+          venvy --help > /dev/null
+          # --json must work AFTER the subcommand on every platform
+          venvy ls --json > /dev/null
+          venvy --json ls > /dev/null
+          # No advisory database in CI -> must fail closed with exit 23, never a traceback
+          set +e
+          out="$(venvy audit --offline --json 2>&1)"; code=$?
+          set -e
+          echo "audit --offline exit=$code"
+          if [ "$code" -ne 23 ]; then
+            echo "expected exit 23 (no advisory database), got $code"; echo "$out"; exit 1
+          fi
+          echo "$out" | python -c "import sys, json; json.load(sys.stdin)"
+          echo "CLI smoke test passed"

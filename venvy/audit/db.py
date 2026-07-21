@@ -271,7 +271,7 @@ def compile_database(
 
     # Atomic publish: fsync the temp file, then replace the live DB in one step.
     _fsync_file(tmp_path)
-    os.replace(str(tmp_path), str(dest_path))
+    _atomic_replace(tmp_path, dest_path)
 
     report.duration_seconds = (_now() - start).total_seconds()
     return report
@@ -535,6 +535,28 @@ class AdvisoryDB:
 # ---------------------------------------------------------------------------
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _atomic_replace(src: Path, dest: Path, attempts: int = 6, delay: float = 0.1) -> None:
+    """os.replace with a short backoff retry.
+
+    On Windows a freshly written file can be transiently locked by an antivirus
+    scanner or the search indexer, making os.replace fail with PermissionError
+    (WinError 32, "used by another process"). That would abort an otherwise-good
+    `venvy audit --refresh`. POSIX never hits this, so the retry is a no-op there.
+    Still atomic: os.replace either swaps the file or leaves the original untouched.
+    """
+    import time
+
+    last_error = None
+    for attempt in range(attempts):
+        try:
+            os.replace(str(src), str(dest))
+            return
+        except PermissionError as exc:  # Windows transient lock
+            last_error = exc
+            time.sleep(delay * (attempt + 1))
+    raise last_error
 
 
 def _fsync_file(path: Path) -> None:

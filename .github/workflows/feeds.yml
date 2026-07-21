@@ -1,0 +1,108 @@
+name: Advisory feeds
+
+# venvy compiles its advisory database from live upstream sources at refresh time, so
+# users get current data without needing a new venvy release. The risk in that design is
+# silent upstream drift: if OSV moves a URL or changes a format, `venvy audit --refresh`
+# breaks for everyone and nobody finds out until users complain.
+#
+# This job is the canary. It performs a REAL refresh against the live feeds on a schedule
+# and fails if a required source breaks or the compiled data collapses.
+on:
+  schedule:
+    # 06:00 UTC every Monday.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+  push:
+    paths:
+      # Re-run whenever the ingest code itself changes.
+      - "venvy/audit/sources.py"
+      - "venvy/audit/db.py"
+      - ".github/workflows/feeds.yml"
+
+jobs:
+  refresh:
+    name: Live refresh from upstream feeds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Refresh against live feeds and sanity-check the result
+        run: |
+          python - <<'PY'
+          import json, sys, tempfile
+          from pathlib import Path
+          from venvy.audit.db import AdvisoryDB, refresh_database
+
+          # Floors are deliberately well below observed values (~26k advisories,
+          # ~13k malicious). They are here to catch a feed returning nothing or
+          # changing shape, not to track normal week-to-week drift.
+          MIN_ADVISORIES = 15000
+          MIN_MALICIOUS = 5000
+
+          dest = Path(tempfile.mkdtemp()) / "osv.sqlite"
+          report = refresh_database(dest_path=dest)
+
+          print(f"advisories : {report.advisories}")
+          print(f"affected   : {report.affected_rows}")
+          print(f"malicious  : {report.malicious}")
+          print(f"skipped    : {report.skipped}")
+          print(f"db size    : {dest.stat().st_size / 1e6:.1f} MB")
+
+          failures = []
+
+          with AdvisoryDB(dest) as db:
+              sources = json.loads(db.meta.get("sources") or "[]")
+              print("\nsources:")
+              for s in sources:
+                  if "error" in s:
+                      # Enrichment feeds are best-effort at runtime, but if one is
+                      # broken we still want to know about it here.
+                      print(f"  {s.get('name')}: FAILED - {s['error']}")
+                      failures.append(f"{s.get('name')} failed: {s['error']}")
+                  else:
+                      print(f"  {s.get('name')}: ok")
+
+              # A package known to carry advisories. If this returns nothing, the
+              # compile succeeded structurally but produced unusable data.
+              if not db.advisories_for("requests"):
+                  failures.append("no advisories found for 'requests' - data looks wrong")
+
+          if report.advisories < MIN_ADVISORIES:
+              failures.append(f"advisories {report.advisories} < floor {MIN_ADVISORIES}")
+          if report.malicious < MIN_MALICIOUS:
+              failures.append(f"malicious {report.malicious} < floor {MIN_MALICIOUS}")
+
+          if failures:
+              print("\nFEED CHECK FAILED:")
+              for f in failures:
+                  print(f"  - {f}")
+              sys.exit(1)
+
+          print("\nFeed check passed.")
+          PY
+
+      - name: Verify a scan works against the freshly built database
+        run: |
+          set -e
+          python -m venv /tmp/probe
+          /tmp/probe/bin/pip install -q "requests==2.19.0"
+          venvy audit --refresh --json --env /tmp/probe > out.json || true
+          python - <<'PY'
+          import json, sys
+          d = json.load(open("out.json"))
+          findings = d["environments"][0]["findings"]
+          if not any(f["package"] == "requests" for f in findings):
+              print("FAILED: known-vulnerable requests 2.19.0 was not flagged")
+              print(json.dumps(d["summary"], indent=2))
+              sys.exit(1)
+          print(f"end-to-end ok: {len(findings)} finding(s) on requests 2.19.0")
+          PY

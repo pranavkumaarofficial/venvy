@@ -24,6 +24,7 @@
 - [Exit codes](#exit-codes)
 - [JSON output (for CI & AI agents)](#json-output-for-ci--ai-agents)
 - [How it works](#how-it-works)
+- [Keeping the advisory database current](#keeping-the-advisory-database-current)
 - [venvy vs pip-audit vs safety](#venvy-vs-pip-audit-vs-safety)
 - [Reclaim duplicated disk space](#reclaim-duplicated-disk-space)
 - [Virtual-environment management](#virtual-environment-management)
@@ -207,6 +208,36 @@ Unknowns and errors are **first-class arrays** — they are never omitted, so au
 | [ecosyste.ms typosquatting dataset](https://github.com/ecosyste-ms/typosquatting-dataset) | Name-to-target typosquat mappings |
 
 The database ships as one snapshot; `venvy audit --refresh` rebuilds it. venvy **never publishes an empty or corrupt database over a working one**, and refuses to scan against an unusable database (fail-closed to exit `23`) rather than reporting a false "clean."
+
+---
+
+## Keeping the advisory database current
+
+New vulnerabilities and malicious packages are published constantly, so the freshness of the data matters as much as the scanner.
+
+**You do not need a new version of venvy to get new advisories.** The database is not bundled in the package; it is compiled on your machine from live upstream feeds. A venvy you installed months ago will pick up today's advisories the moment you refresh:
+
+```bash
+venvy audit --refresh
+```
+
+**venvy tells you when the data is old.** Every run prints the database age. Past 14 days it is treated as stale: you get a warning and the exit code degrades to `22` rather than reporting a clean result from old data.
+
+**Scheduling a refresh.** venvy never touches the network during a scan and will not silently update itself, so refreshing is something you schedule explicitly. Weekly is a reasonable default.
+
+```bash
+# Linux/macOS - crontab -e, refresh every Monday at 9am
+0 9 * * 1 /usr/local/bin/venvy audit --refresh --json > /tmp/venvy-audit.json
+```
+
+```powershell
+# Windows - weekly scheduled task
+schtasks /create /tn "venvy audit" /tr "venvy audit --refresh --json" /sc weekly /d MON /st 09:00
+```
+
+In CI, run `--refresh` on a scheduled workflow and `--offline` on pull requests, so PR builds stay fast and deterministic while the scheduled job keeps the data current.
+
+**Upstream feeds are monitored.** A [scheduled job](https://github.com/pranavkumaarofficial/venvy/actions/workflows/feeds.yml) performs a real refresh against the live feeds every week and fails if a source breaks, changes format, or returns implausibly little data. If upstream drifts, it shows up here before it shows up for you.
 
 ---
 

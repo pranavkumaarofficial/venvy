@@ -21,7 +21,7 @@ class TestPipEventsCRUD:
     def test_log_and_retrieve_event(self, tmp_path):
         from venvy.registry import VenvRegistry
 
-        with patch("venvy.utils.get_venvy_data_dir", return_value=tmp_path):
+        with patch("venvy.registry.get_venvy_data_dir", return_value=tmp_path):
             reg = VenvRegistry()
             event_id = reg.log_pip_event(
                 env_path=tmp_path / ".venv",
@@ -43,7 +43,7 @@ class TestPipEventsCRUD:
     def test_get_recent_events_ordered(self, tmp_path):
         from venvy.registry import VenvRegistry
 
-        with patch("venvy.utils.get_venvy_data_dir", return_value=tmp_path):
+        with patch("venvy.registry.get_venvy_data_dir", return_value=tmp_path):
             reg = VenvRegistry()
             reg.log_pip_event(env_path=tmp_path / ".venv", action="install", packages=["first"])
             reg.log_pip_event(env_path=tmp_path / ".venv", action="install", packages=["second"])
@@ -59,7 +59,7 @@ class TestPipEventsCRUD:
     def test_get_event_summary(self, tmp_path):
         from venvy.registry import VenvRegistry
 
-        with patch("venvy.utils.get_venvy_data_dir", return_value=tmp_path):
+        with patch("venvy.registry.get_venvy_data_dir", return_value=tmp_path):
             reg = VenvRegistry()
             reg.log_pip_event(env_path=tmp_path / ".venv", action="install", exit_code=0, size_delta_mb=10.0)
             reg.log_pip_event(env_path=tmp_path / ".venv", action="install", exit_code=1, size_delta_mb=0.0)
@@ -74,7 +74,7 @@ class TestPipEventsCRUD:
     def test_get_alerts(self, tmp_path):
         from venvy.registry import VenvRegistry
 
-        with patch("venvy.utils.get_venvy_data_dir", return_value=tmp_path):
+        with patch("venvy.registry.get_venvy_data_dir", return_value=tmp_path):
             reg = VenvRegistry()
             reg.log_pip_event(env_path=tmp_path / ".venv", action="install", alert_level=None)
             reg.log_pip_event(env_path=tmp_path / ".venv", action="install",
@@ -109,7 +109,7 @@ class TestPipObserver:
     def test_before_event_returns_snapshot(self, tmp_path):
         from venvy.pip_observer import PipObserver
 
-        with patch("venvy.utils.get_venvy_data_dir", return_value=tmp_path):
+        with patch("venvy.registry.get_venvy_data_dir", return_value=tmp_path):
             observer = PipObserver()
 
         with patch.object(observer, "_get_pip_freeze", return_value=["requests==2.31.0"]):
@@ -124,7 +124,7 @@ class TestPipObserver:
     def test_after_event_logs_to_registry(self, tmp_path):
         from venvy.pip_observer import PipObserver
 
-        with patch("venvy.utils.get_venvy_data_dir", return_value=tmp_path):
+        with patch("venvy.registry.get_venvy_data_dir", return_value=tmp_path):
             observer = PipObserver()
 
         context = {
@@ -147,7 +147,7 @@ class TestPipObserver:
     def test_after_event_computes_diff(self, tmp_path):
         from venvy.pip_observer import PipObserver
 
-        with patch("venvy.utils.get_venvy_data_dir", return_value=tmp_path):
+        with patch("venvy.registry.get_venvy_data_dir", return_value=tmp_path):
             observer = PipObserver()
 
         context = {
@@ -169,7 +169,7 @@ class TestPipObserver:
     def test_alert_on_many_packages(self, tmp_path):
         from venvy.pip_observer import PipObserver
 
-        with patch("venvy.utils.get_venvy_data_dir", return_value=tmp_path):
+        with patch("venvy.registry.get_venvy_data_dir", return_value=tmp_path):
             observer = PipObserver()
 
         # 25 packages added
@@ -191,7 +191,7 @@ class TestPipObserver:
     def test_no_alert_normal_install(self, tmp_path):
         from venvy.pip_observer import PipObserver
 
-        with patch("venvy.utils.get_venvy_data_dir", return_value=tmp_path):
+        with patch("venvy.registry.get_venvy_data_dir", return_value=tmp_path):
             observer = PipObserver()
 
         context = {"start_time": time.time(), "before_freeze": [], "size_before_mb": 50.0}
@@ -208,7 +208,7 @@ class TestPipObserver:
     def test_alert_on_failed_install(self, tmp_path):
         from venvy.pip_observer import PipObserver
 
-        with patch("venvy.utils.get_venvy_data_dir", return_value=tmp_path):
+        with patch("venvy.registry.get_venvy_data_dir", return_value=tmp_path):
             observer = PipObserver()
 
         context = {"start_time": time.time(), "before_freeze": [], "size_before_mb": 50.0}
@@ -226,7 +226,7 @@ class TestPipObserver:
     def test_status_report_structure(self, tmp_path):
         from venvy.pip_observer import PipObserver
 
-        with patch("venvy.utils.get_venvy_data_dir", return_value=tmp_path):
+        with patch("venvy.registry.get_venvy_data_dir", return_value=tmp_path):
             observer = PipObserver()
 
         report = observer.get_status_report(tmp_path / ".venv")

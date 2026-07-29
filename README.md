@@ -10,6 +10,38 @@
 [![Detects: CVEs + malicious](https://img.shields.io/badge/detects-CVEs%20%2B%20malicious-critical.svg)](#what-venvy-detects)
 [![Agent & CI ready](https://img.shields.io/badge/output-JSON%20%2B%20exit%20codes-informational.svg)](#json-output-for-ci--ai-agents)
 
+<p align="center">
+  <img src="assets/demo.gif" alt="venvy audit scanning a virtual environment offline and flagging a malicious typosquat plus vulnerable packages" width="840">
+</p>
+
+```bash
+pip install venvy
+venvy audit          # scan every environment on your machine, offline
+```
+
+<details>
+<summary><b>Example scan output</b> (text) — one command, fully offline</summary>
+
+```text
+MALICIOUS PACKAGES FOUND - 4 app package(s) affected across 1 env(s)
+scanned 5 packages (5 unique) in 69ms
+advisory database: 2.0 days old
+
+demo/.venv
+   package    version  advisory             severity   fix
+!  requestts  1.0.0    MAL-2022-7439        malicious  -
+*  click      8.1.8    PYSEC-2026-2132      HIGH       8.3.3
+*  pyyaml     5.3.1    GHSA-8q59-q68h-6hv4  CRITICAL   5.4
+*  pyyaml     5.3.1    PYSEC-2021-142       UNKNOWN    5.4
+*  requests   2.32.4   GHSA-gc5v-m9x4-r6x2  MODERATE   2.33.0
+*  requests   2.32.4   PYSEC-2026-2275      MEDIUM     2.33.0
+```
+
+`!` malicious · `*` vulnerable · exit code `21` so CI fails the build. `requestts` is a
+typosquat of `requests`; nothing was installed to produce this — venvy reads package
+metadata as text only.
+</details>
+
 > **Keywords:** python security audit · vulnerable package scanner · malicious PyPI package detection · offline CVE scanner · supply-chain security · typosquatting detection · pip-audit alternative · virtual environment manager · OSV database · CI dependency scanning · deduplicate virtual environments.
 
 ---

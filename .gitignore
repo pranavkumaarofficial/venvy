@@ -183,3 +183,5 @@ test_basic.py
 ideas/
 skills/
 notes/
+# venvy demo render artifact (assets/demo.gif IS committed; the built env is not)
+/demo/

@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Install date on every finding.** Each finding now carries `installed_at`, the local
+  date the package landed on disk (from the `.dist-info` directory mtime), shown as a
+  `landed` column in the human report and an `installed_at` field in JSON. This turns a
+  stale finding from "uninstall it" into "this arrived on <date> — scope what was exposed
+  in that window." (Suggested by a reader on r/devsecops.)
+
 ## [1.0.0] - 2026-07-21
 
 First stable release. venvy is now an **offline, machine-wide Python supply-chain

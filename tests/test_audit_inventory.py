@@ -175,3 +175,48 @@ def test_read_python_version_absent(tmp_path):
     env = tmp_path / "env"
     env.mkdir()
     assert read_python_version(env) is None
+
+
+def test_installed_at_from_dist_info_mtime(tmp_path):
+    # The install date is the .dist-info directory mtime, as a local ISO date.
+    import os
+    from datetime import datetime
+
+    env = tmp_path / "env"
+    sp = _make_win_site(env)
+    d = _dist_info(sp, "ctx-0.1.2.dist-info", name="ctx", version="0.1.2")
+    # Pin the directory mtime to a known instant (2026-07-08 12:00 local).
+    ts = datetime(2026, 7, 8, 12, 0, 0).timestamp()
+    os.utime(d, (ts, ts))
+
+    inv = read_env_inventory(env)
+    pkg = next(p for p in inv.packages if p.name == "ctx")
+    assert pkg.installed_at == "2026-07-08"
+
+
+def test_installed_at_survives_into_scan_json(tmp_path):
+    # The date must reach the finding + JSON, per-env, so it can drive blast-radius scoping.
+    import os, json
+    from datetime import datetime
+    from venvy.audit.db import compile_database, AdvisoryDB
+    from venvy.audit.scanner import scan
+    from venvy.audit import report as R
+
+    dbp = tmp_path / "adv.sqlite"
+    compile_database(dbp, [{
+        "id": "MAL-DEMO-1", "summary": "x", "database_specific": {"malicious": True},
+        "affected": [{"package": {"ecosystem": "PyPI", "name": "ctx"},
+                      "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}]}],
+    }], min_advisories=1)
+
+    env = tmp_path / "env"
+    sp = _make_win_site(env)
+    d = _dist_info(sp, "ctx-0.1.2.dist-info", name="ctx", version="0.1.2")
+    ts = datetime(2026, 7, 8, 12, 0, 0).timestamp()
+    os.utime(d, (ts, ts))
+
+    result = scan(env_paths=[env], db_path=dbp)
+    finding = result.environments[0].findings[0]
+    assert finding.installed_at == "2026-07-08"
+    payload = R.build_json(result, R.decide_exit_code(result))
+    assert payload["environments"][0]["findings"][0]["installed_at"] == "2026-07-08"

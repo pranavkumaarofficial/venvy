@@ -156,6 +156,7 @@ def _finding_json(f) -> dict:
         "aliases": list(f.aliases),
         "fixed_versions": list(f.fixed_versions),
         "toolchain": f.toolchain,
+        "installed_at": f.installed_at,
     }
 
 
@@ -224,6 +225,7 @@ def render_human(result, console, include_toolchain: bool = False) -> None:
             table.add_column("advisory")
             table.add_column("severity")
             table.add_column("fix")
+            table.add_column("landed")
             for f in shown:
                 if f.status == "unknown":
                     marker = "[dim]?[/dim]"
@@ -236,7 +238,8 @@ def render_human(result, console, include_toolchain: bool = False) -> None:
                 # A malicious package's "severity" is that it's malicious; a raw CVSS
                 # UNKNOWN there reads as a gap when it isn't one.
                 sev = "malicious" if f.kind == "malicious" else severity_label(f.severity)
-                table.add_row(marker, pkg, f.version, f.advisory_id, sev, fix)
+                landed = f.installed_at or "[dim]-[/dim]"
+                table.add_row(marker, pkg, f.version, f.advisory_id, sev, fix, landed)
             console.print(table)
 
         # Toolchain summary when not expanded.

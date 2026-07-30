@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -32,6 +33,7 @@ class InstalledPackage:
     version: str       # as recorded (validated parseable where possible)
     raw_name: str      # name as declared in metadata / dir name, for display
     source: str        # path to the .dist-info / .egg-info dir (provenance)
+    installed_at: Optional[str] = None  # local ISO date this package landed on disk
 
 
 @dataclass(frozen=True)
@@ -176,7 +178,25 @@ def _package_from_dir(entry_path: Path) -> Optional[InstalledPackage]:
         version=version,
         raw_name=raw_name,
         source=str(entry_path),
+        installed_at=_dir_install_date(entry_path),
     )
+
+
+def _dir_install_date(entry_path: Path) -> Optional[str]:
+    """Best-effort install date from the ``.dist-info`` directory mtime (local date).
+
+    pip writes the metadata directory at install time, so its mtime approximates when
+    the package landed. Crude, but it turns a finding from "uninstall it" into "this
+    arrived on <date> — scope what was exposed." Never raises; returns None on failure.
+    """
+    try:
+        mtime = entry_path.stat().st_mtime
+    except OSError:
+        return None
+    try:
+        return datetime.fromtimestamp(mtime).astimezone().date().isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _read_packages_from_site(site_packages: Path) -> Tuple[List[InstalledPackage], List[str]]:

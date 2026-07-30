@@ -52,6 +52,7 @@ class Finding:
     aliases: Tuple[str, ...]
     fixed_versions: Tuple[str, ...]
     toolchain: bool = False
+    installed_at: Optional[str] = None   # local ISO date the package landed (per env)
 
     def sort_key(self):
         rank = _KIND_RANK.get("unknown" if self.status == "unknown" else self.kind, 3)
@@ -274,12 +275,13 @@ def _run(db, inputs, global_errors, workers, start):
         env_findings: List[Finding] = []
         for pkg in inv.packages:
             for base in findings_by_key.get((pkg.name, pkg.version), ()):
-                # Attach this env's display name for the package.
+                # Attach this env's display name and install date for the package.
                 f = Finding(
                     package=base.package, version=base.version, raw_name=pkg.raw_name,
                     advisory_id=base.advisory_id, kind=base.kind, status=base.status,
                     severity=base.severity, summary=base.summary, aliases=base.aliases,
                     fixed_versions=base.fixed_versions, toolchain=base.toolchain,
+                    installed_at=pkg.installed_at,
                 )
                 env_findings.append(f)
                 if f.status == "unknown":

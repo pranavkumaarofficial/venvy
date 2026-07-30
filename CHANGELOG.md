@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.1.0] - 2026-07-30
 
 ### Added
 - **Install date on every finding.** Each finding now carries `installed_at`, the local

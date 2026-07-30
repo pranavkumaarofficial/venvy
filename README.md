@@ -28,18 +28,19 @@ scanned 5 packages (5 unique) in 69ms
 advisory database: 2.0 days old
 
 demo/.venv
-   package    version  advisory             severity   fix
-!  requestts  1.0.0    MAL-2022-7439        malicious  -
-*  click      8.1.8    PYSEC-2026-2132      HIGH       8.3.3
-*  pyyaml     5.3.1    GHSA-8q59-q68h-6hv4  CRITICAL   5.4
-*  pyyaml     5.3.1    PYSEC-2021-142       UNKNOWN    5.4
-*  requests   2.32.4   GHSA-gc5v-m9x4-r6x2  MODERATE   2.33.0
-*  requests   2.32.4   PYSEC-2026-2275      MEDIUM     2.33.0
+   package    version  advisory             severity   fix     landed
+!  requestts  1.0.0    MAL-2022-7439        malicious  -       2026-07-08
+*  click      8.1.8    PYSEC-2026-2132      HIGH       8.3.3   2026-01-20
+*  pyyaml     5.3.1    GHSA-8q59-q68h-6hv4  CRITICAL   5.4     2025-11-02
+*  pyyaml     5.3.1    PYSEC-2021-142       UNKNOWN    5.4     2025-11-02
+*  requests   2.32.4   GHSA-gc5v-m9x4-r6x2  MODERATE   2.33.0  2026-03-15
+*  requests   2.32.4   PYSEC-2026-2275      MEDIUM     2.33.0  2026-03-15
 ```
 
-`!` malicious · `*` vulnerable · exit code `21` so CI fails the build. `requestts` is a
-typosquat of `requests`; nothing was installed to produce this — venvy reads package
-metadata as text only.
+`!` malicious · `*` vulnerable · exit code `21` so CI fails the build. The `landed` date
+(from the `dist-info` mtime) scopes the blast radius — that typosquat arrived weeks
+before this scan. Nothing was installed to produce this; venvy reads package metadata as
+text only.
 </details>
 
 > **Keywords:** python security audit · vulnerable package scanner · malicious PyPI package detection · offline CVE scanner · supply-chain security · typosquatting detection · pip-audit alternative · virtual environment manager · OSV database · CI dependency scanning · deduplicate virtual environments.

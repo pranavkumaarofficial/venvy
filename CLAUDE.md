@@ -51,7 +51,7 @@ venvy audit --env .venv --json     # Scan a single environment
 venvy audit --offline --json       # Never touch the network (deterministic CI)
 venvy audit --refresh --json       # Update the advisory database, then scan
 ```
-On the first run, `venvy audit` downloads a one-time advisory database (~30MB);
+On the first run, `venvy audit` downloads a one-time advisory database (~26MB);
 every scan after that is fully offline. Exit code precedence:
 malicious (21) > vulnerable (20) > stale/partial (22).
 

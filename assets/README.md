@@ -14,7 +14,7 @@ docker build -t venvy-vhs -f assets/demo/Dockerfile .
 docker run --rm -v "$PWD:/vhs" venvy-vhs assets/demo.tape
 ```
 
-This writes `assets/demo.gif`. The first run downloads the ~30MB advisory database
+This writes `assets/demo.gif`. The first run downloads the ~26MB advisory database
 inside the container (hidden in the recording); the visible part is only the scan.
 
 ## What the demo shows

@@ -102,7 +102,7 @@ Most Python security scanners audit **one project at a time**, need the **networ
 pip install venvy
 ```
 
-Requires **Python 3.8+**. Works on **Windows, macOS, and Linux** — the full test suite runs on all three across Python 3.8–3.13 in [CI](https://github.com/pranavkumaarofficial/venvy/actions/workflows/tests.yml) on every commit. No compiler, no heavyweight dependencies.
+Requires **Python 3.8+**. Works on **Windows, macOS, and Linux** — all 229 tests run on all three across Python 3.8–3.13 in [CI](https://github.com/pranavkumaarofficial/venvy/actions/workflows/tests.yml) on every commit. No compiler, no heavyweight dependencies.
 
 ---
 
@@ -110,7 +110,7 @@ Requires **Python 3.8+**. Works on **Windows, macOS, and Linux** — the full te
 
 ```bash
 # Audit every known environment on your machine.
-# On first run, venvy downloads a one-time advisory database (~30MB).
+# On first run, venvy downloads a one-time advisory database (~26MB).
 # Every scan after that is fully offline.
 venvy audit
 
@@ -236,9 +236,14 @@ Unknowns and errors are **first-class arrays** — they are never omitted, so au
 
 | Source | Contribution |
 |---|---|
-| [OSV.dev](https://osv.dev) (PyPI) | ~26,000 advisories, including ~13,000 known-malicious package records |
+| [OSV.dev](https://osv.dev) (PyPI) | The bulk of the advisory records, vulnerabilities and known-malicious packages alike |
 | [DataDog malicious-software-packages-dataset](https://github.com/DataDog/malicious-software-packages-dataset) | Curated malicious PyPI packages |
 | [ecosyste.ms typosquatting dataset](https://github.com/ecosyste-ms/typosquatting-dataset) | Name-to-target typosquat mappings |
+
+A database built on 2026-09-22 held **27,579 advisories, 13,667 of them malicious-package
+records**, in a 26MB SQLite file. Those counts move as the feeds do; `venvy audit` prints
+the totals whenever it builds or refreshes the database, so the number you see is the
+number you have.
 
 The database ships as one snapshot; `venvy audit --refresh` rebuilds it. venvy **never publishes an empty or corrupt database over a working one**, and refuses to scan against an unusable database (fail-closed to exit `23`) rather than reporting a false "clean."
 

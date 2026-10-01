@@ -29,7 +29,10 @@ classifiers = [
 keywords = ["python", "security", "supply-chain", "vulnerability-scanner", "cve", "malicious-packages", "typosquatting", "osv", "pip-audit-alternative", "sca", "virtual-environment", "venv", "conda", "ai-agent", "ci", "deduplication", "disk-space", "hardlink"]
 requires-python = ">=3.8"
 dependencies = [
-    "click>=8.0.0",
+    # click <=8.3.2 carries CVE-2026-7246 (command injection in click.edit(), which
+    # venvy never calls). 8.3.3 needs Python >=3.10, so 3.8/3.9 stay on the 8.1 line.
+    "click>=8.3.3; python_version >= '3.10'",
+    "click>=8.0.0; python_version < '3.10'",
     "rich>=13.0.0",
     "psutil>=5.9.0",
     "packaging>=21.0",

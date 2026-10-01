@@ -240,8 +240,8 @@ Unknowns and errors are **first-class arrays** — they are never omitted, so au
 | [DataDog malicious-software-packages-dataset](https://github.com/DataDog/malicious-software-packages-dataset) | Curated malicious PyPI packages |
 | [ecosyste.ms typosquatting dataset](https://github.com/ecosyste-ms/typosquatting-dataset) | Name-to-target typosquat mappings |
 
-A database built on 2026-09-22 held **27,579 advisories, 13,667 of them malicious-package
-records**, in a 26MB SQLite file. Those counts move as the feeds do; `venvy audit` prints
+A database built on 2026-09-30 held **27,742 advisories, 13,697 of them malicious-package
+records**, in a 25.5MB SQLite file. Those counts move as the feeds do; `venvy audit` prints
 the totals whenever it builds or refreshes the database, so the number you see is the
 number you have.
 

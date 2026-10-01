@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **venvy no longer reports its own dependency.** `click>=8.0.0` resolved to 8.1.8, which
+  carries CVE-2026-7246, so a fresh `pip install venvy` followed by `venvy audit` reported
+  a HIGH finding against venvy's own dependency. The floor is now `click>=8.3.3` on Python
+  3.10 and above. Python 3.8 and 3.9 stay on the 8.1 line, because 8.3.3 requires 3.10, and
+  the finding is still reported there rather than suppressed. venvy does not call the
+  affected API (`click.edit()`).
+
 ## [1.1.0] - 2026-07-30
 
 ### Added

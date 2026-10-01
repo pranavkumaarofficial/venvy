@@ -4,8 +4,11 @@ Every claim in the README is meant to be checkable. This file lists the commands
 Run them yourself; none of them need network access after the first, and none of them
 install anything malicious.
 
-Last run: 2026-09-22, venvy 1.1.0 from PyPI, Windows 11, Python 3.10.
-Advisory database of that date: 27,579 advisories, 13,667 malicious records, 26 MB.
+Last run: 2026-09-30, venvy 1.1.0 from PyPI, Windows 11, Python 3.10.
+Advisory database of that date: 27,742 advisories, 13,697 malicious records, 25.5 MB on
+disk. The feeds grow daily, so your counts will be higher than these and that is expected.
+Sections 1 to 4, 6 and 8 were re-run on this date. Sections 5 and 7 are from the 2026-09-22
+run and are unchanged in behaviour.
 
 To keep your own registry untouched, point venvy's data directory somewhere temporary:
 `APPDATA` on Windows, `XDG_CONFIG_HOME` on Linux, `~/Library/Application Support` on macOS.
@@ -20,7 +23,14 @@ python -m venv .venv && .venv/bin/pip install venvy
 ```
 
 Expected: the advisory database downloads once, the scan runs, exit code `0` on a clean
-environment. Observed: 9.5 s total including the download, scan itself 52 ms.
+environment. Observed: 7 s total including the download, scan itself 47 ms, exit `0` on
+Python 3.10.
+
+On Python 3.8 and 3.9 this reports one finding against `click` rather than exiting `0`.
+pip cannot resolve `click` 8.3.3 there, because that release requires Python 3.10, so the
+8.1 line is the newest available and it carries CVE-2026-7246. venvy does not call the
+affected API (`click.edit()`), so nothing in venvy is exposed, but the finding is real and
+venvy reports it rather than special-casing itself out of its own scan.
 
 ## 2. Known-vulnerable packages are found, exit code 20
 
@@ -29,8 +39,9 @@ python -m venv vuln && vuln/bin/pip install "requests==2.32.5" "urllib3==2.6.3"
 venvy audit --env vuln; echo $?
 ```
 
-Expected: findings for both packages with fix versions, exit `20`. Observed: 6 advisories
-across the two packages, exit `20`, scan 276 ms.
+Expected: findings for both packages with fix versions, exit `20`. Observed: 9 advisories
+across the two packages, 2 for `requests` and 7 for `urllib3`, each with a fix version and
+the date it landed on disk. Exit `20`.
 
 ## 3. Malicious packages are found without installing one
 
@@ -47,9 +58,9 @@ venvy audit --env mal; echo $?
 ```
 
 Expected: `security-util-py 0.0.6` flagged as malicious against `MAL-2023-10`, exit `21`.
-Observed: exactly that. There is no code in that directory, only a text file, which is
-the point: an inventory that had to import or execute the package would find nothing here,
-and an inventory that executes a real malicious package has already lost.
+Observed: exactly that, in 7 ms. There is no code in that directory, only a text file,
+which is the point: an inventory that had to import or execute the package would find
+nothing here, and an inventory that executes a real malicious package has already lost.
 
 ## 4. It fails closed rather than reporting a false all-clear
 
@@ -68,8 +79,11 @@ XDG_CONFIG_HOME=$D venvy audit --env vuln --offline; echo $?
 ```
 
 Expected `23` for all three. Observed `23` for all three, each with a message naming the
-cause and the fix. Case (c) matters most: a database that opens cleanly but holds no
-advisories would make every package read as clean. venvy reports
+cause and the fix: `not found`, `is unreadable or corrupt (file is not a database)`, and
+`has no usable advisories (advisories=0, affected=0)`.
+
+Case (c) matters most: a database that opens cleanly but holds no advisories would make
+every package read as clean. venvy reports
 `has no usable advisories (advisories=0, affected=0)` instead.
 
 ## 5. Stale data degrades the exit code instead of lying
@@ -89,8 +103,8 @@ With a database already present:
 venvy audit --env vuln --offline; echo $?
 ```
 
-Expected: a normal scan. Observed: exit `20` in 28 ms with `--offline` set, which fails
-if anything tries to reach the network.
+Expected: a normal scan. Observed: a normal scan with `--offline` set, 26 ms on a clean
+environment, which fails if anything tries to reach the network.
 
 ## 7. JSON output is versioned and machine-readable
 
@@ -107,15 +121,16 @@ Observed: valid JSON, `schema_version: 1`, top-level keys `schema_version`, `exi
 pip install -e ".[dev]" && pytest
 ```
 
-Observed: 230 collected, 229 passed, 1 skipped (a symlink test that needs privileges
-Windows does not grant by default). CI runs the same suite on Windows, macOS and Linux
-across Python 3.8 to 3.13.
+Observed: 230 collected, 229 passed, 1 skipped in 8.1 s (the skip is a symlink test that
+needs privileges Windows does not grant by default). CI runs the same suite on Windows,
+macOS and Linux across Python 3.8 to 3.13.
 
 ---
 
 ## What a full machine scan actually costs
 
-On one developer laptop, `venvy audit --scan` (full-disk discovery, not the fast default
+Measured 2026-09-22 and not re-run since. On one developer laptop, `venvy audit --scan`
+(full-disk discovery, not the fast default
 path) found 13 environments, scanned 1,429 packages (1,199 unique), and reported 187
 affected application packages across 10 environments; 3 environments were clean.
 No malicious packages on that machine.

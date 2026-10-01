@@ -7,7 +7,7 @@
   date the package landed on disk (from the `.dist-info` directory mtime), shown as a
   `landed` column in the human report and an `installed_at` field in JSON. This turns a
   stale finding from "uninstall it" into "this arrived on <date> — scope what was exposed
-  in that window." (Suggested by a reader on r/devsecops.)
+  in that window."
 
 ## [1.0.0] - 2026-07-21
 

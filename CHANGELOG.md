@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.1.1] - 2026-09-30
 
 ### Fixed
 - **venvy no longer reports its own dependency.** `click>=8.0.0` resolved to 8.1.8, which

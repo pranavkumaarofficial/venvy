@@ -135,7 +135,8 @@ def test_db_meta_present(tmp_path, db):
     env = _make_env(tmp_path, "proj", ["click-8.1.7.dist-info"])
     with db:
         result = scan(env_paths=[env], db=db)
-    assert result.db_meta["advisory_count"] == "4"
+    assert result.db_meta["advisory_count"] == 4
+    assert isinstance(result.db_meta["malicious_count"], int)
     assert result.db_meta["stale"] is False
     assert result.db_meta["age_days"] is not None
 

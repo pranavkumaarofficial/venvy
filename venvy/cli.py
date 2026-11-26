@@ -1372,21 +1372,6 @@ def shell_hook(shell):
 
 
 @main.command()
-@click.option('--port', type=int, default=5173, help='Port for the UI server')
-def ui(port):
-    """Start the local venvy UI"""
-    import subprocess as sp
-
-    ui_script = Path(__file__).resolve().parents[1] / "ui" / "serve.py"
-    if not ui_script.exists():
-        console.print("[red]UI server not found. Expected ui/serve.py[/red]")
-        return
-
-    console.print(f"[green]Starting UI on http://127.0.0.1:{port}[/green]")
-    sp.run([sys.executable, str(ui_script), str(port)])
-
-
-@main.command()
 @click.pass_context
 def stats(ctx):
     """Show statistics about your venvs"""

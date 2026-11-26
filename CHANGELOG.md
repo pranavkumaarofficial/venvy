@@ -1,5 +1,41 @@
 # Changelog
 
+## [1.2.0] - unreleased
+
+### Added
+- **Tests for the scan's three promises** (`tests/test_audit_invariants.py`): no code from
+  a scanned environment runs (planted package, `.pth` and `sitecustomize.py` traps), no
+  subprocess is spawned, and no socket is opened when a usable database exists.
+- **Self-audit before publish.** The release workflow installs the built wheel into a
+  clean venv on Python 3.10 and 3.13, checks `venvy --version` matches the tag, and blocks
+  the release if `venvy audit` finds a vulnerable or malicious package in it.
+- `SECURITY.md` and `docs/THREAT_MODEL.md`.
+- `scripts/bench.py`: reproducible benchmark of `audit` and `dedup` at 10/50/100 envs.
+
+### Removed
+- **`venvy ui`.** It looked for `ui/serve.py` in the source tree, which is not part of the
+  published package, so it failed on every PyPI install (and exited 0 when it did).
+- **`psutil` dependency.** Nothing in venvy imported it.
+
+### Fixed
+- `db.advisory_count` and `db.malicious_count` in `venvy audit --json` are now integers.
+  They were emitted as strings because the database stores metadata as text. Consumers
+  that compared them as strings need updating.
+
+### Changed
+- **`venvy dedup` dry runs are about 7x faster.** On 20 environments (855 MB, 13,825
+  files, warm cache) the scan went from 15.8 s to 2.1 s with identical results; at 100
+  environments (4.3 GB, `scripts/bench.py`) from 98.8 s to 13.0 s. Two
+  changes: the file walk uses `os.scandir`, so type and size come from the directory
+  listing instead of three `stat` calls per file; and a file's SHA-256 is taken from the
+  `RECORD` file pip wrote at install time when the recorded size matches the size on
+  disk, so most files are never read. Files without a usable `RECORD` entry are hashed
+  as before. `--apply` still re-hashes every file before linking, so a stale or forged
+  `RECORD` can only cause a skipped file, never a bad link. `--verify` hashes everything
+  in the dry run too. JSON output gains `hashed_files` and `record_hashed_files`.
+- Development status classifier moved from Alpha to Beta.
+- README rewritten around the audit, with a Design notes section.
+
 ## [1.1.1] - 2026-09-30
 
 ### Fixed

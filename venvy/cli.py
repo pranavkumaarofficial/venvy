@@ -1372,21 +1372,6 @@ def shell_hook(shell):
 
 
 @main.command()
-@click.option('--port', type=int, default=5173, help='Port for the UI server')
-def ui(port):
-    """Start the local venvy UI"""
-    import subprocess as sp
-
-    ui_script = Path(__file__).resolve().parents[1] / "ui" / "serve.py"
-    if not ui_script.exists():
-        console.print("[red]UI server not found. Expected ui/serve.py[/red]")
-        return
-
-    console.print(f"[green]Starting UI on http://127.0.0.1:{port}[/green]")
-    sp.run([sys.executable, str(ui_script), str(port)])
-
-
-@main.command()
 @click.pass_context
 def stats(ctx):
     """Show statistics about your venvs"""
@@ -1934,8 +1919,11 @@ def audit(ctx, json_flag, refresh, env_paths, scan, include_toolchain, offline):
 @click.option('--min-size', type=int, default=None,
               help='Ignore files smaller than this many bytes (default: 4096)')
 @click.option('--top', type=int, default=10, help='How many largest groups to list')
+@click.option('--verify', is_flag=True,
+              help='Hash every candidate file instead of trusting pip RECORD hashes '
+                   '(slower; --apply always re-hashes before linking regardless)')
 @click.pass_context
-def dedup(ctx, do_apply, env_paths, min_size, top):
+def dedup(ctx, do_apply, env_paths, min_size, top, verify):
     """Reclaim disk space by hardlinking identical files across environments.
 
     Every environment installs its own byte-for-byte copy of the same wheels. This
@@ -1971,7 +1959,7 @@ def dedup(ctx, do_apply, env_paths, min_size, top):
     if not json_mode and not _is_quiet(ctx):
         console.print("[dim]Scanning %d environment(s) for duplicate files...[/dim]"
                       % len(envs))
-    report = find_duplicates(envs, min_size=threshold)
+    report = find_duplicates(envs, min_size=threshold, use_record=not verify)
     report.errors.extend(enum_errors)
 
     # --- apply ------------------------------------------------------------
@@ -1992,6 +1980,8 @@ def dedup(ctx, do_apply, env_paths, min_size, top):
             "applied": report.applied,
             "environments_scanned": report.envs_scanned,
             "files_scanned": report.files_scanned,
+            "hashed_files": report.hashed_files,
+            "record_hashed_files": report.record_hashed_files,
             "duplicate_groups": len(report.groups),
             "reclaimable_bytes": report.reclaimable_bytes,
             "already_shared_bytes": report.already_shared_bytes,

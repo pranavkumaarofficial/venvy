@@ -1,0 +1,52 @@
+{
+  "machine": {
+    "os": "Windows-10-10.0.26200-SP0",
+    "python": "3.9.16",
+    "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+    "cpu_count": 8,
+    "runs_per_size": 3,
+    "db_built_at": "2026-11-26T22:09:02.605642+00:00",
+    "db_advisory_count": 29021
+  },
+  "results": [
+    {
+      "envs": 10,
+      "packages_scanned": 114,
+      "unique_packages": 23,
+      "affected_app_packages": 58,
+      "exit_code": 20,
+      "audit_wall_ms_median": 571,
+      "audit_scan_ms_median": 166,
+      "dedup_wall_ms": 19991,
+      "dedup_files_scanned": 6846,
+      "env_bytes": 399123991,
+      "reclaimable_bytes": 185301504
+    },
+    {
+      "envs": 50,
+      "packages_scanned": 564,
+      "unique_packages": 23,
+      "affected_app_packages": 288,
+      "exit_code": 20,
+      "audit_wall_ms_median": 1177,
+      "audit_scan_ms_median": 409,
+      "dedup_wall_ms": 64586,
+      "dedup_files_scanned": 34496,
+      "env_bytes": 2108686181,
+      "reclaimable_bytes": 1340217614
+    },
+    {
+      "envs": 100,
+      "packages_scanned": 1125,
+      "unique_packages": 23,
+      "affected_app_packages": 575,
+      "exit_code": 20,
+      "audit_wall_ms_median": 1166,
+      "audit_scan_ms_median": 412,
+      "dedup_wall_ms": 98814,
+      "dedup_files_scanned": 69125,
+      "env_bytes": 4273905475,
+      "reclaimable_bytes": 2810138926
+    }
+  ]
+}

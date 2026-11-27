@@ -178,3 +178,93 @@ def test_three_envs_collapse_to_one_inode(tmp_path):
     apply_dedup(report, min_size=1)
     inodes = {_ino(e / "Lib" / "site-packages" / "pkg" / "data.bin") for e in envs}
     assert len(inodes) == 1
+
+
+# ---------------------------------------------------------------------------
+# RECORD-assisted scanning: the dry run may take hashes from pip's RECORD file, but
+# apply must never trust them.
+# ---------------------------------------------------------------------------
+import base64
+import hashlib
+
+
+def _record_hash(content):
+    digest = hashlib.sha256(content).digest()
+    return "sha256=" + base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+
+
+def _write_record(env, rows):
+    """rows: [(relative path, content-for-hash, size)]"""
+    dist = env / "Lib" / "site-packages" / "pkg-1.0.dist-info"
+    dist.mkdir(exist_ok=True)
+    lines = ["%s,%s,%d" % (rel, _record_hash(c), size) for rel, c, size in rows]
+    lines.append("pkg-1.0.dist-info/RECORD,,")
+    (dist / "RECORD").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_record_hashes_are_used_when_size_matches(tmp_path):
+    envs = [_env(tmp_path, n, {"pkg/data.bin": BIG}) for n in ("a", "b")]
+    for e in envs:
+        _write_record(e, [("pkg/data.bin", BIG, len(BIG))])
+
+    report = find_duplicates(envs, min_size=1000)
+    assert report.record_hashed_files == 2
+    assert report.hashed_files == 0
+    assert report.reclaimable_bytes == len(BIG)
+
+
+def test_record_size_mismatch_falls_back_to_hashing(tmp_path):
+    envs = [_env(tmp_path, n, {"pkg/data.bin": BIG}) for n in ("a", "b")]
+    for e in envs:
+        _write_record(e, [("pkg/data.bin", BIG, len(BIG) + 1)])   # stale RECORD
+
+    report = find_duplicates(envs, min_size=1000)
+    assert report.record_hashed_files == 0
+    assert report.hashed_files == 2
+    assert report.reclaimable_bytes == len(BIG)
+
+
+def test_use_record_false_hashes_everything(tmp_path):
+    envs = [_env(tmp_path, n, {"pkg/data.bin": BIG}) for n in ("a", "b")]
+    for e in envs:
+        _write_record(e, [("pkg/data.bin", BIG, len(BIG))])
+
+    report = find_duplicates(envs, min_size=1000, use_record=False)
+    assert report.record_hashed_files == 0
+    assert report.hashed_files == 2
+
+
+def test_forged_record_cannot_cause_a_bad_link(tmp_path):
+    """Two same-size files with different content, and a RECORD that lies that they
+    match. The dry run is allowed to be fooled; apply must not be."""
+    a_content, b_content = b"A" * 5000, b"B" * 5000
+    a = _env(tmp_path, "a", {"pkg/data.bin": a_content})
+    b = _env(tmp_path, "b", {"pkg/data.bin": b_content})
+    _write_record(a, [("pkg/data.bin", a_content, 5000)])
+    _write_record(b, [("pkg/data.bin", a_content, 5000)])         # the lie
+
+    report = find_duplicates([a, b], min_size=1000)
+    assert len(report.groups) == 1                                 # fooled, by design
+
+    report = apply_dedup(report, min_size=1000)
+    fa = a / "Lib" / "site-packages" / "pkg" / "data.bin"
+    fb = b / "Lib" / "site-packages" / "pkg" / "data.bin"
+    assert report.linked_files == 0
+    assert fa.read_bytes() == a_content
+    assert fb.read_bytes() == b_content
+    assert _ino(fa) != _ino(fb)
+
+
+def test_record_entries_outside_site_packages_are_ignored(tmp_path):
+    a = _env(tmp_path, "a", {"pkg/data.bin": BIG})
+    b = _env(tmp_path, "b", {"pkg/data.bin": BIG})
+    outside = tmp_path / "a" / "Scripts" / "tool.exe"
+    outside.parent.mkdir()
+    outside.write_bytes(BIG)
+    for e in (a, b):
+        _write_record(e, [("pkg/data.bin", BIG, len(BIG)),
+                          ("../../Scripts/tool.exe", BIG, len(BIG))])
+
+    report = find_duplicates([a, b], min_size=1000)
+    assert report.files_scanned == 2              # tool.exe is outside site-packages
+    assert all("Scripts" not in p for g in report.groups for p in g.paths)

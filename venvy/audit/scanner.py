@@ -344,7 +344,15 @@ def _db_meta(db: AdvisoryDB) -> dict:
         "built_at": db.meta.get("built_at"),
         "age_days": round(age, 3) if age is not None else None,
         "stale": db.is_stale(),
-        "advisory_count": db.meta.get("advisory_count"),
-        "malicious_count": db.meta.get("malicious_count"),
+        "advisory_count": _meta_int(db.meta.get("advisory_count")),
+        "malicious_count": _meta_int(db.meta.get("malicious_count")),
         "sources": provenance,
     }
+
+
+def _meta_int(value):
+    """The meta table stores every value as text; JSON consumers expect numbers."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

@@ -1,14 +1,11 @@
-# venvy — Offline Python Supply-Chain Security Audit for Every Virtual Environment
+# venvy: offline supply-chain audit for every Python environment on your machine
 
-**venvy** scans **every Python virtual environment on your machine** for **known-vulnerable and malicious packages** — fully **offline**, deterministic, and in a form your **CI pipelines and AI coding agents** can trust. Because it already knows where every environment lives, it also reclaims duplicated disk space and doubles as a lightweight environment manager.
+venvy scans every Python virtual environment on your machine for known-vulnerable and known-malicious packages. The scan runs offline against a local advisory database and returns a versioned JSON report with semantic exit codes, so CI jobs and coding agents can act on the result without parsing text.
 
-[![PyPI version](https://img.shields.io/pypi/v/venvy.svg)](https://pypi.org/project/venvy/) 
+[![PyPI version](https://img.shields.io/pypi/v/venvy.svg)](https://pypi.org/project/venvy/)
 [![Tests](https://github.com/pranavkumaarofficial/venvy/actions/workflows/tests.yml/badge.svg)](https://github.com/pranavkumaarofficial/venvy/actions/workflows/tests.yml)
 [![Python versions](https://img.shields.io/pypi/pyversions/venvy.svg)](https://pypi.org/project/venvy/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Scan: offline](https://img.shields.io/badge/scan-100%25%20offline-brightgreen.svg)](#how-it-works)
-[![Detects: CVEs + malicious](https://img.shields.io/badge/detects-CVEs%20%2B%20malicious-critical.svg)](#what-venvy-detects)
-[![Agent & CI ready](https://img.shields.io/badge/output-JSON%20%2B%20exit%20codes-informational.svg)](#json-output-for-ci--ai-agents)
 
 <p align="center">
   <img src="assets/demo.gif" alt="venvy audit scanning a virtual environment offline and flagging a malicious typosquat plus vulnerable packages" width="840">
@@ -20,7 +17,7 @@ venvy audit          # scan every environment on your machine, offline
 ```
 
 <details>
-<summary><b>Example scan output</b> (text) — one command, fully offline</summary>
+<summary><b>Example scan output</b> (text)</summary>
 
 ```text
 MALICIOUS PACKAGES FOUND - 4 app package(s) affected across 1 env(s)
@@ -37,13 +34,11 @@ demo/.venv
 *  requests   2.32.4   PYSEC-2026-2275      MEDIUM     2.33.0  2026-03-15
 ```
 
-`!` malicious · `*` vulnerable · exit code `21` so CI fails the build. The `landed` date
-(from the `dist-info` mtime) scopes the blast radius — that typosquat arrived weeks
-before this scan. Nothing was installed to produce this; venvy reads package metadata as
-text only.
+`!` malicious, `*` vulnerable. Exit code `21`, so CI fails the build. The `landed` date
+comes from the `dist-info` mtime and tells you how long the package has been on disk:
+here the typosquat arrived weeks before the scan. The demo environment is reproducible
+from [`assets/demo/`](assets/demo/).
 </details>
-
-> **Keywords:** python security audit · vulnerable package scanner · malicious PyPI package detection · offline CVE scanner · supply-chain security · typosquatting detection · pip-audit alternative · virtual environment manager · OSV database · CI dependency scanning · deduplicate virtual environments.
 
 ---
 
@@ -55,14 +50,15 @@ text only.
 - [Quick start](#quick-start)
 - [Command reference](#command-reference)
 - [Exit codes](#exit-codes)
-- [JSON output (for CI & AI agents)](#json-output-for-ci--ai-agents)
+- [JSON output](#json-output)
 - [How it works](#how-it-works)
+- [Design notes](#design-notes)
 - [Keeping the advisory database current](#keeping-the-advisory-database-current)
 - [venvy vs pip-audit vs safety](#venvy-vs-pip-audit-vs-safety)
-- [Reclaim duplicated disk space](#reclaim-duplicated-disk-space)
-- [Virtual-environment management](#virtual-environment-management)
+- [Measured performance](#measured-performance)
 - [FAQ](#faq)
 - [Coverage & limitations](#coverage--limitations)
+- [Also included: dedup and environment management](#also-included-dedup-and-environment-management)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -70,16 +66,11 @@ text only.
 
 ## Why venvy
 
-Most Python security scanners audit **one project at a time**, need the **network**, and only look for **CVEs**. venvy fills the gap none of them cover at once:
+pip-audit and safety audit one project at a time, and pip-audit looks up advisories from an online service when it runs. Neither looks at the other twenty environments on the same laptop: the half-finished experiments, the venvs a coding agent created and nobody deleted, the old project that still has a 2021 `pyyaml` in it. Those are the ones nobody is checking.
 
-| Capability | What it means | Who else does it |
-|---|---|---|
-| **Machine-wide** | Audit *every* environment on the box in one command, not one project at a time | Nobody, by default |
-| **Offline-first** | Scans run with zero network; a one-time database download is the only online step | Not pip-audit |
-| **CVEs *and* malicious** | Flags known-vulnerable versions **and** known-malicious / typosquat packages | Rare in one tool |
-| **Agent- & CI-native** | Stable JSON schema + semantic exit codes designed for automation | Partial elsewhere |
+venvy keeps a registry of every environment on the machine, so it can audit all of them in one command. It downloads its advisory database once and scans offline after that, which also makes CI runs deterministic. It checks known-malicious and typosquat lists alongside CVEs.
 
-**Built for the AI-coding era.** An LLM cannot be trusted to answer "is this package safe?" — it will hallucinate a CVE. venvy is a **deterministic ground-truth lookup** an agent can call (`venvy audit --json`) and rely on.
+An agent asked "is this package safe?" will sometimes invent an answer. `venvy audit --json` is a lookup against published advisories, with exit codes an agent can branch on.
 
 ---
 
@@ -88,11 +79,11 @@ Most Python security scanners audit **one project at a time**, need the **networ
 | Finding type | Description | Example |
 |---|---|---|
 | **Vulnerable** | An installed version falls within a known-vulnerable range (CVE / GHSA / PYSEC) | `requests 2.19.0` → GHSA-… (fixed in 2.20) |
-| **Malicious** | An installed package/version is on a known-malicious list | `ctx`, `django`-typosquats |
+| **Malicious** | An installed package/version is on a known-malicious list | `ctx`, `django` typosquats |
 | **Typosquat** | The package name matches a known typosquat of a popular library | `reqeusts` → "did you mean `requests`?" |
-| **Unknown** | An advisory exists but cannot be version-scoped — surfaced, never silently cleared | reported as `unknown` |
+| **Unknown** | An advisory exists but cannot be version-scoped. Reported, never cleared. | reported as `unknown` |
 
-**Correctness-first by design:** anything that cannot be confidently evaluated is reported as `unknown`, never as "safe." A false "you're clean" is treated as a critical bug.
+Anything venvy cannot evaluate with confidence is reported as `unknown`, never as safe. A false "you're clean" is the worst bug this tool can have; see [Design notes](#design-notes).
 
 ---
 
@@ -102,7 +93,7 @@ Most Python security scanners audit **one project at a time**, need the **networ
 pip install venvy
 ```
 
-Requires **Python 3.8+**. Works on **Windows, macOS, and Linux** — all 229 tests run on all three across Python 3.8–3.13 in [CI](https://github.com/pranavkumaarofficial/venvy/actions/workflows/tests.yml) on every commit. No compiler, no heavyweight dependencies.
+Requires Python 3.8+. The test suite runs on Windows, macOS and Linux across Python 3.8 to 3.13 in [CI](https://github.com/pranavkumaarofficial/venvy/actions/workflows/tests.yml) on every push. Dependencies: `click`, `rich`, `packaging`.
 
 ---
 
@@ -111,13 +102,13 @@ Requires **Python 3.8+**. Works on **Windows, macOS, and Linux** — all 229 tes
 ```bash
 # Audit every known environment on your machine.
 # On first run, venvy downloads a one-time advisory database (~26MB).
-# Every scan after that is fully offline.
+# Every scan after that is offline.
 venvy audit
 
 # Audit a single environment
 venvy audit --env .venv
 
-# Machine-readable output for CI or an AI agent
+# Machine-readable output for CI or an agent
 venvy audit --json
 
 # Update the advisory database, then scan
@@ -145,41 +136,17 @@ advisory database: 0.1 days old
 
 ## Command reference
 
-### Security audit
-
 | Command | Description |
 |---|---|
-| `venvy audit` | Scan all known environments (auto-fetches the database on first run) |
+| `venvy audit` | Scan all known environments (fetches the database on first run) |
 | `venvy audit --env <path>` | Scan a specific environment (repeatable) |
-| `venvy audit --json` | Emit the versioned JSON report (CI / agents) |
+| `venvy audit --json` | Emit the versioned JSON report |
 | `venvy audit --refresh` | Download the latest advisory database, then scan |
 | `venvy audit --offline` | Never access the network; fail if no local database exists |
 | `venvy audit --scan` | Also discover unregistered environments on disk |
 | `venvy audit --include-toolchain` | Include `pip`/`setuptools`/`wheel` in findings and the exit code |
 
-**Toolchain handling:** `pip`, `setuptools`, and `wheel` ship in nearly every venv and carry many advisories. They are always *reported* but excluded from the exit-code gate by default, so a stale bundled `pip` never buries a real application-dependency finding. Use `--include-toolchain` to gate on them too.
-
-### Disk-space reclamation
-
-| Command | Description |
-|---|---|
-| `venvy dedup` | Read-only: report space reclaimable by deduplicating identical files |
-| `venvy dedup --apply` | Collapse duplicates into hardlinks (nothing is deleted) |
-| `venvy dedup --env <path>` | Limit to specific environments (repeatable) |
-| `venvy dedup --min-size <bytes>` | Ignore files below this size (default 4096) |
-| `venvy dedup --json` | Machine-readable report |
-
-### Environment management
-
-| Command | Description |
-|---|---|
-| `venvy ls` | List all registered environments |
-| `venvy ensure` | Create or verify an environment (idempotent) |
-| `venvy safe-install <pkgs>` | Install packages with automatic rollback on failure |
-| `venvy checkpoint --name <n>` | Snapshot environment state |
-| `venvy rollback --latest` | Restore the last checkpoint |
-| `venvy status` | Environment health report |
-| `venvy doctor` | Diagnose setup issues |
+`pip`, `setuptools` and `wheel` are reported but left out of the exit code by default. [Design notes](#design-notes) explains why.
 
 Add `--json` to any command for structured output.
 
@@ -187,11 +154,9 @@ Add `--json` to any command for structured output.
 
 ## Exit codes
 
-venvy returns **semantic exit codes** so scripts, CI gates, and agents can branch on the result without parsing text.
-
 | Code | Meaning |
 |---|---|
-| `0` | Clean — no findings |
+| `0` | Clean, no findings |
 | `20` | Vulnerable package(s) found |
 | `21` | Malicious package(s) found |
 | `22` | Completed with caveats (stale database or unresolved unknowns) |
@@ -208,60 +173,82 @@ if [ "$code" = "20" ] || [ "$code" = "21" ]; then exit 1; fi
 
 ---
 
-## JSON output (for CI & AI agents)
+## JSON output
 
-`venvy audit --json` emits a **stable, versioned** schema. Key fields:
+`venvy audit --json` emits a versioned schema. Key fields:
 
 | Field | Description |
 |---|---|
 | `schema_version` | Integer; incremented only on breaking changes |
 | `exit_code` / `success` | The exit code and a boolean mirror |
 | `db.built_at` / `db.age_days` / `db.stale` | Advisory-database provenance and freshness |
+| `db.advisory_count` / `db.malicious_count` | Integer record counts in the local database |
 | `db.sources[]` | Each data feed with its URL, SHA-256, and fetch time |
 | `summary` | Counts: envs scanned, packages, unique packages, vulnerable, malicious, unknown |
 | `environments[]` | Per-environment `findings[]` (package, version, advisory ID, severity, fixed versions) and `errors[]` |
 
-Unknowns and errors are **first-class arrays** — they are never omitted, so automation can distinguish "clean" from "could not determine."
+Unknowns and errors are always present as arrays, so automation can tell "clean" apart from "could not determine".
 
 ---
 
 ## How it works
 
 1. **Enumerate** every environment from venvy's local registry (plus optional on-disk discovery).
-2. **Read** each environment's installed packages directly from `*.dist-info` metadata — **text only, no subprocess, and never importing the scanned package** (importing a malicious package would run its code).
-3. **Match** each `name==version` against a **local, prebuilt advisory database** using exact PEP 440 version-range evaluation. No network, no randomness, no model.
-4. **Report** findings with the honest headline count, malicious-first, with fix versions.
+2. **Read** each environment's installed packages from `*.dist-info` metadata as text. No subprocess, and the scanned package is never imported, because importing a malicious package runs its code.
+3. **Match** each `name==version` against a local advisory database using PEP 440 version-range evaluation from `packaging`. No network.
+4. **Report** findings malicious-first, with fix versions.
 
-**Advisory data** is compiled offline into a single SQLite index from:
+The advisory database is compiled into a single SQLite file from:
 
 | Source | Contribution |
 |---|---|
-| [OSV.dev](https://osv.dev) (PyPI) | The bulk of the advisory records, vulnerabilities and known-malicious packages alike |
+| [OSV.dev](https://osv.dev) (PyPI) | Most of the records, vulnerabilities and known-malicious packages alike |
 | [DataDog malicious-software-packages-dataset](https://github.com/DataDog/malicious-software-packages-dataset) | Curated malicious PyPI packages |
 | [ecosyste.ms typosquatting dataset](https://github.com/ecosyste-ms/typosquatting-dataset) | Name-to-target typosquat mappings |
 
 A database built on 2026-09-30 held **27,742 advisories, 13,697 of them malicious-package
 records**, in a 25.5MB SQLite file. Those counts move as the feeds do; `venvy audit` prints
 the totals whenever it builds or refreshes the database, so the number you see is the
-number you have.
+number you have. [docs/VERIFY.md](docs/VERIFY.md) has the commands to check every figure in
+this README.
 
-The database ships as one snapshot; `venvy audit --refresh` rebuilds it. venvy **never publishes an empty or corrupt database over a working one**, and refuses to scan against an unusable database (fail-closed to exit `23`) rather than reporting a false "clean."
+venvy never publishes an empty or corrupt database over a working one, and refuses to scan against an unusable database (exit `23`) rather than report a false clean.
+
+---
+
+## Design notes
+
+**Fail closed: "unknown" is a result, not an error.** The matcher (`venvy/audit/matcher.py`) returns `AFFECTED`, `NOT_AFFECTED` or `UNKNOWN`. Any version or range boundary it cannot parse becomes `UNKNOWN` and is shown to the user. Running against the real OSV dump before the first release caught two bugs that would each have produced wrong answers:
+
+- Some OSV records name a package with no version ranges at all. Treating "no range matched" as "not affected" cleared those silently. They are now flagged unscoped and reported as `UNKNOWN`.
+- Many OSV records carry a `GIT` range (commit hashes) next to the `ECOSYSTEM` range (versions). The hashes fail to parse as versions and were turning correct results for `cryptography`, `pip`, `pyjwt` and `pygments` into `UNKNOWN`. The matcher now evaluates only `ECOSYSTEM` and untyped ranges.
+
+Both cases are in the golden test corpus (`tests/test_audit_matcher.py`). The cost of failing closed is noise: you will see some `UNKNOWN` rows that a human can clear in a minute. I chose that over a tool that is sometimes silently wrong.
+
+**Read metadata, never import.** The cheap way to list installed packages is `pip freeze` or `importlib.metadata` inside the target environment. Both run code from that environment, and a malicious package's code is exactly what you don't want to run. venvy parses `dist-info` and `egg-info` files as text from outside the environment. The tradeoff is that it only sees what pip-style metadata records, which is why Conda-channel packages are out of scope ([#5](https://github.com/pranavkumaarofficial/venvy/issues/5)).
+
+**Toolchain findings don't set the exit code by default.** Almost every venv ships an old bundled `pip`, and `pip` has many advisories. With the toolchain included, nearly every machine exits `20` on every run, and a gate that always fails gets switched off. So `pip`, `setuptools` and `wheel` are reported in their own section, and the headline counts affected *application* packages rather than raw advisory rows. `--include-toolchain` restores strict gating.
+
+**What I'd do differently.**
+- Early versions had an on-device LLM (Gemma) that explained install errors. I removed it in 0.5.0: it added a multi-gigabyte download to a tool whose point is a deterministic answer, and nothing in the audit path needed it. I should have asked "does this need a model?" before building it.
+- In 1.1.0, a fresh `pip install venvy` followed by `venvy audit` reported a HIGH finding against venvy's own `click` dependency. A release check that installs from PyPI and audits the result would have caught it before release. The publish workflow now does exactly that, and blocks the release if venvy finds anything in its own install.
+- The CLI still carries more than thirty commands from venvy's time as an environment manager. If I started today, the audit would be the whole tool.
 
 ---
 
 ## Keeping the advisory database current
 
-New vulnerabilities and malicious packages are published constantly, so the freshness of the data matters as much as the scanner.
+New advisories are published constantly, so the age of the data matters as much as the scanner.
 
-**You do not need a new version of venvy to get new advisories.** The database is not bundled in the package; it is compiled on your machine from live upstream feeds. A venvy you installed months ago will pick up today's advisories the moment you refresh:
+**You do not need a new version of venvy to get new advisories.** The database is not bundled in the package; it is compiled on your machine from live upstream feeds:
 
 ```bash
 venvy audit --refresh
 ```
 
-**venvy tells you when the data is old.** Every run prints the database age. Past 14 days it is treated as stale: you get a warning and the exit code degrades to `22` rather than reporting a clean result from old data.
+**venvy tells you when the data is old.** Every run prints the database age. Past 14 days it is treated as stale: you get a warning, and a run that would otherwise be clean exits `22` instead of `0`.
 
-**Scheduling a refresh.** venvy never touches the network during a scan and will not silently update itself, so refreshing is something you schedule explicitly. Weekly is a reasonable default.
+**Scheduling a refresh.** venvy never touches the network during a scan and will not update itself, so you schedule refreshes yourself. Weekly is a reasonable default.
 
 ```bash
 # Linux/macOS - crontab -e, refresh every Monday at 9am
@@ -275,7 +262,7 @@ schtasks /create /tn "venvy audit" /tr "venvy audit --refresh --json" /sc weekly
 
 In CI, run `--refresh` on a scheduled workflow and `--offline` on pull requests, so PR builds stay fast and deterministic while the scheduled job keeps the data current.
 
-**Upstream feeds are monitored.** A [scheduled job](https://github.com/pranavkumaarofficial/venvy/actions/workflows/feeds.yml) performs a real refresh against the live feeds every week and fails if a source breaks, changes format, or returns implausibly little data. If upstream drifts, it shows up here before it shows up for you.
+**Upstream feeds are monitored.** A [scheduled job](https://github.com/pranavkumaarofficial/venvy/actions/workflows/feeds.yml) does a real refresh against the live feeds every week and fails if a source breaks, changes format, or returns implausibly little data.
 
 ---
 
@@ -284,36 +271,91 @@ In CI, run `--refresh` on a scheduled workflow and `--offline` on pull requests,
 | Capability | venvy | pip-audit | safety |
 |---|:---:|:---:|:---:|
 | Scan installed packages for CVEs | Yes | Yes | Yes |
-| Detect malicious / typosquat packages | **Yes** | No | Partial |
-| Audit **all environments** at once | **Yes** | No (per-project) | No |
-| Fully **offline** scan | **Yes** | No | Partial |
+| Detect malicious / typosquat packages | Yes | No | Partial |
+| Audit all environments at once | Yes | No (per-project) | No |
+| Fully offline scan | Yes | No | Partial |
 | Machine-parseable JSON | Yes | Yes | Yes |
 | Semantic exit codes | Yes | Partial | Partial |
-| Also manages virtual environments | **Yes** | No | No |
 | License | MIT | Apache-2.0 | MIT (DB tiered) |
 
-*Comparison reflects the default, freely available behavior of each tool. pip-audit and safety are excellent CVE scanners; venvy's edge is the offline, machine-wide, malicious-aware, agent-native combination.*
+*Comparison reflects the default, freely available behavior of each tool. pip-audit and safety are good CVE scanners, and pip-audit can also audit a requirements file before anything is installed, which venvy cannot. venvy's difference is the combination of offline, machine-wide and malicious-aware.*
 
 ---
 
-## Reclaim duplicated disk space
+## Measured performance
 
-Because venvy already knows where every environment is, it can also collapse the waste between them. Each environment stores its **own byte-for-byte copy** of the same wheels — ten environments with `numpy` store `numpy` ten times.
+Measured 2026-11-26 on a Windows 11 laptop (Intel Core i5-1135G7, 8 logical CPUs, NVMe SSD), Python 3.9, advisory database with 29,021 records. Reproduce with:
 
 ```bash
-venvy dedup            # read-only: show what could be reclaimed
+python scripts/bench.py --workdir <empty dir> --sizes 10 50 100 --runs 3
+```
+
+The script builds N environments from 23 pinned wheels (half Flask web stacks with known-vulnerable pins, a quarter CLI stacks, a quarter numpy), fetches a fresh database into an isolated data directory, and times `venvy audit --offline --json` (one warm-up, median of three runs) and one read-only `venvy dedup --json`. Raw output: [before](docs/benchmarks/2026-11-26-windows-before.json) and [after](docs/benchmarks/2026-11-26-windows-after.json) the 1.2.0 dedup change.
+
+| Envs | Packages | `audit` scan | `audit` wall clock | `dedup` dry run, 1.1.1 | `dedup` dry run, 1.2.0 | Env size | Reclaimable |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 114 | 148 ms | 504 ms | 20.0 s | 1.7 s | 399 MB | 185 MB (46%) |
+| 50 | 564 | 230 ms | 703 ms | 64.6 s | 6.3 s | 2,109 MB | 1,340 MB (64%) |
+| 100 | 1,125 | 336 ms | 955 ms | 98.8 s | 13.0 s | 4,274 MB | 2,810 MB (66%) |
+
+"Scan" is venvy's own timer; "wall clock" adds Python startup and imports. Audit times are from the 1.2.0 run; the earlier run measured 166 to 412 ms for the same scans, so treat differences of that size as noise. Reclaimable bytes were identical in both runs at every size.
+
+How to read this:
+- **The audit numbers flatter venvy.** These environments hold only 23 distinct `name==version` pairs, and venvy does one database lookup per distinct pair, so lookups barely grow with N. A real machine has far more distinct versions. What this does show is that reading 1,125 packages' metadata across 100 environments costs well under a second.
+- **The dedup percentages are an upper bound.** Environments built from three package lists are near-copies of each other. Real environments overlap less, so expect less than 66%.
+- **Why dedup got faster.** Profiling the 1.1.1 scan showed the time going to reading files and to three `stat` calls per file, not to SHA-256. 1.2.0 walks with `os.scandir` and takes each file's hash from the `RECORD` file pip wrote at install time, when the recorded size matches the size on disk, so most files are never opened. `--apply` ignores `RECORD` and hashes every file before linking it; `--verify` does the same for the dry run.
+
+---
+
+## FAQ
+
+**Is `venvy audit` really offline?**
+The scan never touches the network. The only online step is the one-time database download (or `--refresh`). Use `--offline` to hard-fail if no local database exists.
+
+**Does it run any code from the packages it scans?**
+No. venvy reads `*.dist-info` metadata as text. It never imports a scanned package or runs `pip` inside the target environment. [`tests/test_audit_invariants.py`](tests/test_audit_invariants.py) checks this with a planted package that writes a file if any of its code runs. [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) lists what venvy trusts and what it doesn't defend against; [SECURITY.md](SECURITY.md) says how to report a problem.
+
+**Can my coding agent use it?**
+Yes. `venvy audit --json` returns a versioned report with semantic exit codes. `venvy init` writes a `CLAUDE.md` into a project telling the agent how to call it.
+
+**Which Python versions and OSes are supported?**
+Python 3.8+ on Windows, macOS and Linux. On Python 3.8 and 3.9, venvy's own `click` dependency carries CVE-2026-7246 because the fixed release needs Python 3.10; venvy reports it rather than hiding it, and does not call the affected API.
+
+**Does it audit Conda environments?**
+It audits the `pip`-installed packages inside any environment, including Conda envs. Conda-channel packages are out of scope for now.
+
+---
+
+## Coverage & limitations
+
+Each known gap is tracked as an open issue; see [all open issues](https://github.com/pranavkumaarofficial/venvy/issues).
+
+| Limitation | Detail | Issue |
+|---|---|---|
+| **Malicious coverage is partial** | Detection is only as complete as its public feeds (~13k malicious records). Some well-known historical typosquats (`python3-dateutil`, `jeIlyfish`, `colourama`) are **not** currently flagged. | [#3](https://github.com/pranavkumaarofficial/venvy/issues/3) |
+| **`--scan` is slow** | Full-disk discovery of unregistered environments can take over two minutes with no progress output. The default `venvy audit` path is fast. | [#4](https://github.com/pranavkumaarofficial/venvy/issues/4) |
+| **Conda-channel packages not audited** | Only `pip`-installed packages inside an environment are scanned (including inside Conda envs). `conda-meta` packages are out of scope. | [#5](https://github.com/pranavkumaarofficial/venvy/issues/5) |
+| **Benchmarks use synthetic environments** | The 100-environment numbers come from environments built from three package lists, which flatters both audit lookups and dedup savings. No measurement on a real developer machine yet. See [Measured performance](#measured-performance). | [#6](https://github.com/pranavkumaarofficial/venvy/issues/6) |
+
+Also:
+- **No scanner catches a novel supply-chain attack.** venvy matches against *known* advisories. Pair it with dependency cooldowns and least-privilege dev environments.
+- **Advisory data ages between refreshes.** venvy prints the database age on every run and changes the exit code when it is stale.
+- **Brand-new or already-yanked malicious packages** may not be in the feeds yet.
+
+---
+
+## Also included: dedup and environment management
+
+These came before the audit and use the same registry.
+
+**`venvy dedup`** finds byte-identical files across your environments and hardlinks them to one copy. The dry run takes hashes from pip's `RECORD` files where the size matches, so it rarely opens a file. It is read-only until `--apply`, never touches bytecode (`.pyc` is rewritten in place, which would corrupt a shared copy), re-verifies each file's hash immediately before linking, and swaps atomically. Measured on three small environments: 18.2 MB reclaimable, about 25% of their size.
+
+```bash
+venvy dedup            # report what could be reclaimed
 venvy dedup --apply    # collapse duplicates into hardlinks
 ```
 
-`venvy dedup` finds files that are **provably identical** across your environments and points them at one copy on disk. **Nothing is deleted; every environment keeps working.** Measured on three small environments: **18.2 MB reclaimable (~25% of their size)**.
-
-It is read-only until you pass `--apply`, never deduplicates bytecode (`.pyc` is rewritten in place, which would corrupt a shared copy), verifies byte-identity by hash immediately before linking, and swaps atomically so a file is never missing.
-
----
-
-## Virtual-environment management
-
-venvy started as an agent-safe environment manager and still is one. It keeps a local SQLite registry of your environments and supports safe, idempotent workflows:
+**Environment management** keeps a local SQLite registry and supports idempotent workflows:
 
 ```bash
 venvy ensure --python 3.11 --json          # create/verify an environment
@@ -323,45 +365,7 @@ venvy rollback --latest                     # restore if something breaks
 venvy ls --json                             # list all environments
 ```
 
----
-
-## FAQ
-
-**Is `venvy audit` really offline?**
-Yes. The scan itself never touches the network. The only online step is the one-time advisory-database download (or `--refresh`). Use `--offline` to hard-fail if no local database exists.
-
-**How is this different from `pip-audit`?**
-`pip-audit` is a strong per-project, online CVE scanner. venvy adds three things it does not do by default: it scans **every** environment at once, it works **offline**, and it detects **malicious/typosquat** packages — not just CVEs.
-
-**Does it run any code from the packages it scans?**
-No. venvy reads `*.dist-info` metadata as text. It never imports a scanned package or runs `pip` inside the target environment.
-
-**Can my AI agent use it?**
-Yes — that is a primary design goal. `venvy audit --json` returns a deterministic, versioned report with semantic exit codes, so an agent gets ground truth instead of a hallucinated answer.
-
-**Which Python versions and OSes are supported?**
-Python 3.8+ on Windows, macOS, and Linux.
-
-**Does it audit Conda environments?**
-It audits the `pip`-installed packages inside any environment (including Conda envs). Conda-channel packages are out of scope for now.
-
----
-
-## Coverage & limitations
-
-venvy is deliberately honest about what it does **not** cover. Each known gap is tracked as an open issue — **contributions welcome**, see [all open issues](https://github.com/pranavkumaarofficial/venvy/issues).
-
-| Limitation | Detail | Issue |
-|---|---|---|
-| **Malicious coverage is partial** | Detection is only as complete as its public feeds (~13k malicious records). Some well-known historical typosquats (`python3-dateutil`, `jeIlyfish`, `colourama`) are **not** currently flagged. | [#3](https://github.com/pranavkumaarofficial/venvy/issues/3) |
-| **`--scan` is slow** | Full-disk discovery of unregistered environments can take >2 minutes with no progress output. The default `venvy audit` path is fast. | [#4](https://github.com/pranavkumaarofficial/venvy/issues/4) |
-| **Conda-channel packages not audited** | Only `pip`-installed packages inside an environment are scanned (including inside Conda envs). `conda-meta` packages are out of scope. | [#5](https://github.com/pranavkumaarofficial/venvy/issues/5) |
-| **Scale unbenchmarked** | The dedup optimization is proven at small scale but not yet measured at 50–100 environments. | [#6](https://github.com/pranavkumaarofficial/venvy/issues/6) |
-
-Also worth knowing:
-- **No scanner catches a novel supply-chain 0-day.** venvy matches against *known* advisories. Pair it with dependency cooldowns and least-privilege dev environments.
-- **Advisory data ages between refreshes.** venvy prints the database age on every run and degrades the exit code when it is stale, rather than silently presenting old data as current.
-- **Brand-new or already-yanked malicious packages** may not appear in the feeds yet.
+Run `venvy --help` for the full list.
 
 ---
 
@@ -375,16 +379,9 @@ pytest            # run the test suite
 venvy audit       # try it locally
 ```
 
-Issues and pull requests are welcome. If you find a false positive or a false negative in the matcher, please open an issue with the package, version, and advisory ID — those become permanent regression tests.
+If you find a false positive or a false negative in the matcher, please open an issue with the package, version and advisory ID. Those become permanent regression tests.
 
-**Looking for something to work on?** The known gaps in [Coverage & limitations](#coverage--limitations) are filed as issues tagged `help wanted` — each one includes the context, the proposed approach, and exactly which files to start in:
-
-- [#3 Expand malicious-package coverage](https://github.com/pranavkumaarofficial/venvy/issues/3) — highest impact
-- [#4 Speed up `--scan` discovery](https://github.com/pranavkumaarofficial/venvy/issues/4)
-- [#5 Audit Conda-channel packages](https://github.com/pranavkumaarofficial/venvy/issues/5)
-- [#6 Benchmark at 50–100 environments](https://github.com/pranavkumaarofficial/venvy/issues/6)
-
-CI runs the full suite on Windows, macOS, and Linux across Python 3.8–3.13 for every push and PR.
+The gaps in [Coverage & limitations](#coverage--limitations) are filed as `help wanted` issues, each with context, a proposed approach and the files to start in. [#3](https://github.com/pranavkumaarofficial/venvy/issues/3) has the most impact.
 
 ---
 

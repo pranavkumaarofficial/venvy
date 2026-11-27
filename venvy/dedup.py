@@ -16,7 +16,10 @@ Safety rules (a dedup tool that corrupts an environment is worse than no dedup t
     payload files are treated as immutable (pip/uv replace files rather than editing
     them, which safely breaks the link); bytecode is not.
   * **Byte-identity is verified by hash immediately before linking**, not inferred from
-    size or mtime, and re-checked at apply time to close the TOCTOU window.
+    size or mtime. The read-only scan may take a file's SHA-256 from the RECORD file
+    pip wrote at install time (when the size on disk matches), because reading every
+    file is the dominant cost. Apply never trusts RECORD: it re-hashes every file it is
+    about to link, so a stale or forged RECORD can only cost a skipped file.
   * **Same filesystem only.** Hardlinks cannot cross devices; groups are keyed on st_dev.
   * **Atomic swap.** We link to a temp name and `os.replace` it over the target, so the
     target file is never absent — a crash mid-run leaves the environment intact.
@@ -24,7 +27,10 @@ Safety rules (a dedup tool that corrupts an environment is worse than no dedup t
 """
 from __future__ import annotations
 
+import base64
+import csv
 import hashlib
+import io
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,6 +43,10 @@ from venvy.audit.inventory import find_site_packages
 DEFAULT_MIN_SIZE = 4096
 
 _HASH_CHUNK = 1 << 20
+
+# A RECORD file lists every installed file of one distribution; numpy's is ~150 KB.
+# Anything far larger is not a real RECORD and is ignored.
+_MAX_RECORD_BYTES = 16 * 1024 * 1024
 
 # Never deduplicate these: CPython may rewrite bytecode caches in place, which would
 # propagate through a shared inode into every other environment.
@@ -64,6 +74,8 @@ class DedupReport:
     envs_scanned: int = 0
     files_scanned: int = 0
     candidate_files: int = 0
+    hashed_files: int = 0             # candidates whose content was read and hashed
+    record_hashed_files: int = 0      # candidates whose hash came from a RECORD file
     groups: Tuple[DuplicateGroup, ...] = field(default_factory=tuple)
     reclaimable_bytes: int = 0
     already_shared_bytes: int = 0     # savings existing hardlinks already provide
@@ -78,23 +90,82 @@ class DedupReport:
 # Discovery.
 # ---------------------------------------------------------------------------
 def _iter_candidate_files(site_packages: Path, min_size: int):
-    """Yield (path, stat) for regular files eligible for deduplication."""
-    for root, dirnames, filenames in os.walk(str(site_packages)):
-        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIR_NAMES]
-        for name in filenames:
-            if name.endswith(_SKIP_SUFFIXES):
-                continue
-            path = Path(root) / name
+    """Yield (path, stat) for regular files eligible for deduplication.
+
+    Uses os.scandir so file type and size come from the directory listing: one
+    filesystem call per directory instead of three per file. On Windows the returned
+    stat has st_ino == 0; callers that need the inode must lstat the path themselves.
+    """
+    stack = [str(site_packages)]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as it:
+                entries = list(it)
+        except OSError:
+            continue
+        for entry in entries:
             try:
-                st = path.lstat()
+                if entry.is_symlink():
+                    continue                  # never follow or rewrite symlinks
+                if entry.is_dir(follow_symlinks=False):
+                    if entry.name not in _SKIP_DIR_NAMES:
+                        stack.append(entry.path)
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                if entry.name.endswith(_SKIP_SUFFIXES):
+                    continue
+                st = entry.stat(follow_symlinks=False)
             except OSError:
-                continue
-            # Regular files only: never follow or rewrite symlinks.
-            if not os.path.isfile(path) or os.path.islink(str(path)):
                 continue
             if st.st_size < min_size:
                 continue
-            yield path, st
+            yield Path(entry.path), st
+
+
+def _path_key(path: str) -> str:
+    return os.path.normcase(os.path.normpath(path))
+
+
+def _load_record_hashes(site_packages: Path) -> Dict[str, Tuple[int, str]]:
+    """Map installed-file path -> (size, sha256 hex) from every *.dist-info/RECORD.
+
+    Entries without a sha256 hash or size, and entries pointing outside site-packages
+    (console scripts, data files), are ignored. A missing or unreadable RECORD just
+    means those files get hashed the slow way.
+    """
+    out: Dict[str, Tuple[int, str]] = {}
+    root = _path_key(str(site_packages))
+    try:
+        dist_infos = [e.path for e in os.scandir(str(site_packages))
+                      if e.name.endswith(".dist-info") and e.is_dir(follow_symlinks=False)]
+    except OSError:
+        return out
+    for dist in dist_infos:
+        record = os.path.join(dist, "RECORD")
+        try:
+            if os.path.getsize(record) > _MAX_RECORD_BYTES:
+                continue
+            with open(record, "rb") as fh:
+                text = fh.read().decode("utf-8", errors="replace")
+        except OSError:
+            continue
+        for row in csv.reader(io.StringIO(text)):
+            if len(row) < 3 or not row[1].startswith("sha256=") or not row[2].isdigit():
+                continue
+            key = _path_key(os.path.join(str(site_packages), row[0]))
+            if not key.startswith(root + os.sep):
+                continue
+            b64 = row[1][len("sha256="):]
+            try:
+                digest = base64.urlsafe_b64decode(b64 + "=" * (-len(b64) % 4)).hex()
+            except (ValueError, TypeError):
+                continue
+            if len(digest) != 64:
+                continue
+            out[key] = (int(row[2]), digest)
+    return out
 
 
 def _hash_file(path: Path) -> Optional[str]:
@@ -114,41 +185,59 @@ def _hash_file(path: Path) -> Optional[str]:
 def find_duplicates(
     env_paths: Sequence[Path],
     min_size: int = DEFAULT_MIN_SIZE,
+    use_record: bool = True,
 ) -> DedupReport:
     """Scan environments and report byte-identical files that could share storage.
 
-    Read-only: this never modifies anything.
+    Read-only: this never modifies anything. With ``use_record`` (the default), a
+    file's hash is taken from its distribution's RECORD when the recorded size matches
+    the size on disk; pass False to read and hash every candidate.
     """
     import time
 
     start = time.time()
     report = DedupReport()
 
-    # Pass 1: bucket by (device, size). Only files matching another file in both
-    # device and size can possibly be linkable, so we hash nothing yet.
-    by_dev_size: Dict[Tuple[int, int], List[Tuple[Path, os.stat_result]]] = {}
+    # Pass 1: bucket by size. Only files matching another file's size can possibly be
+    # linkable, so nothing is hashed or even lstat'ed yet.
+    by_size: Dict[int, List[Tuple[Path, os.stat_result]]] = {}
+    records: Dict[str, Tuple[int, str]] = {}
     for env in env_paths:
         sites = find_site_packages(Path(env))
         if not sites:
             continue
         report.envs_scanned += 1
         for site in sites:
+            if use_record:
+                records.update(_load_record_hashes(site))
             for path, st in _iter_candidate_files(site, min_size):
                 report.files_scanned += 1
-                by_dev_size.setdefault((st.st_dev, st.st_size), []).append((path, st))
+                by_size.setdefault(st.st_size, []).append((path, st))
 
-    # Pass 2: hash only the files that share a (device, size) bucket.
+    # Pass 2: for files that share a size, get device, inode and content hash.
     by_content: Dict[Tuple[int, int, str], List[Tuple[Path, os.stat_result]]] = {}
-    for (dev, size), entries in by_dev_size.items():
+    for size, entries in by_size.items():
         if len(entries) < 2:
             continue
         for path, st in entries:
             report.candidate_files += 1
-            digest = _hash_file(path)
+            if not st.st_ino:                 # Windows scandir stat carries no inode
+                try:
+                    st = os.lstat(str(path))
+                except OSError:
+                    report.errors.append("unreadable: %s" % path)
+                    continue
+            rec = records.get(_path_key(str(path)))
+            if rec is not None and rec[0] == st.st_size:
+                digest = rec[1]  # type: Optional[str]
+                report.record_hashed_files += 1
+            else:
+                digest = _hash_file(path)
+                report.hashed_files += 1
             if digest is None:
                 report.errors.append("unreadable: %s" % path)
                 continue
-            by_content.setdefault((dev, size, digest), []).append((path, st))
+            by_content.setdefault((st.st_dev, size, digest), []).append((path, st))
 
     groups: List[DuplicateGroup] = []
     for (dev, size, digest), entries in by_content.items():
@@ -254,7 +343,9 @@ def apply_dedup(report: DedupReport, min_size: int = DEFAULT_MIN_SIZE) -> DedupR
             # Size or content differing from the scan means the file was rewritten in
             # the meantime. Skip it and say so — never clobber a file we can't verify.
             if st.st_size != group.size or _hash_file(path) != group.digest:
-                report.errors.append("changed since scan, skipped: %s" % path)
+                report.errors.append(
+                    "changed since scan (or its RECORD hash was wrong), "
+                    "skipped: %s" % path)
                 continue
             try:
                 _link_over(canonical, path)

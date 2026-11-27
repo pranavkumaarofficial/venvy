@@ -38,10 +38,57 @@ jobs:
           name: release-dists
           path: dist/
 
+  # Install the exact wheel that is about to ship into a clean venv and audit it with
+  # itself. v1.1.0 shipped with a dependency floor that resolved to a vulnerable click;
+  # this job would have blocked that release. 3.8/3.9 are excluded on purpose: the fixed
+  # click needs Python 3.10, and the README documents that finding there.
+  self-audit:
+    runs-on: ubuntu-latest
+    needs:
+      - release-build
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Retrieve release distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dists
+          path: dist/
+
+      - name: Install the wheel into a clean venv
+        run: |
+          python -m venv /tmp/fresh
+          /tmp/fresh/bin/pip install dist/*.whl
+
+      - name: Version matches the release tag
+        run: |
+          installed="$(/tmp/fresh/bin/venvy --version | awk '{print $NF}')"
+          tag="${GITHUB_REF_NAME#v}"
+          echo "installed=$installed tag=$tag"
+          test "$installed" = "$tag"
+
+      - name: venvy audits its own install clean
+        run: |
+          set +e
+          /tmp/fresh/bin/venvy audit --refresh --json --env /tmp/fresh > audit.json
+          code=$?
+          set -e
+          python -c "import json; d=json.load(open('audit.json')); [print(e['path'], f['package'], f['version'], f['advisory_id']) for e in d['environments'] for f in e['findings']]"
+          # 0 clean, 22 caveats (unknowns) are acceptable; 20/21 block the release.
+          if [ "$code" = "20" ] || [ "$code" = "21" ] || [ "$code" = "1" ] || [ "$code" = "23" ]; then
+            echo "self-audit failed with exit $code"; exit 1
+          fi
+
   pypi-publish:
     runs-on: ubuntu-latest
     needs:
       - release-build
+      - self-audit
     permissions:
       # IMPORTANT: this permission is mandatory for trusted publishing
       id-token: write

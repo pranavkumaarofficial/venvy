@@ -21,6 +21,16 @@ jobs:
           # Python 3.8 is not provided for the arm64 macOS runners.
           - os: macos-latest
             python-version: "3.8"
+          # ubuntu-latest is Ubuntu 26.04, which setup-python has no 3.8/3.9 builds for.
+          - os: ubuntu-latest
+            python-version: "3.8"
+          - os: ubuntu-latest
+            python-version: "3.9"
+        include:
+          - os: ubuntu-22.04
+            python-version: "3.8"
+          - os: ubuntu-22.04
+            python-version: "3.9"
 
     steps:
       - uses: actions/checkout@v4
